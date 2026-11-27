@@ -1976,6 +1976,7 @@ const PRIVACY = { microphone: 'Privacy_Microphone', speech: 'Privacy_SpeechRecog
 // The mics the voice helper last listed (asked whenever the panel opens), and the pick sent to it ('' is automatic).
 let mics = { list: [], auto: '' };
 const micPick = () => send({ type: 'voice_mic', id: config.mic ?? '' });
+let seenVoiceReady = false;
 function onVoice(m) {
   if (m.type === 'voice_state') { voiceBusy = m.state === 'listening' || m.state === 'processing'; stir(); }
   if (m.type === 'voice_state' && m.state === 'listening') { interruptQuietly('listening'); speech.stop(); warmUp(); if (VOICE_ON()) speech.prewarm(); } // talking over it stops it
@@ -1986,7 +1987,7 @@ function onVoice(m) {
     onSpoken(m.text.trim(), m.area);
   }
   else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
-  else if (m.type === 'voice_ready') { micPick(); liveCall.hangUp('helper'); voiceConfig(); } // a restarted helper has no call mic and none of the settings (the live mode among them)
+  else if (m.type === 'voice_ready') { micPick(); if (seenVoiceReady) liveCall.hangUp('helper'); seenVoiceReady = true; voiceConfig(); } // only hang up on an actual helper restart, not initial startup
   else if (m.type === 'voice_mics') { mics = cleanMics(m); panel(); }
   else if (m.type === 'voice_lang') { langInfo = { id: String(m.id ?? ''), engine: String(m.engine ?? ''), online: !!m.online }; logLine('speech_lang', langInfo); panel(); }
   else if (m.type === 'voice_error') {
