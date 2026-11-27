@@ -1,0 +1,20 @@
+# Squash merges use the pull request title as the commit subject, so it follows the commit format (AGENTS.md, Commits).
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$TITLE" > "$RUNNER_TEMP/title" && .githooks/commit-msg "$RUNNER_TEMP/title"

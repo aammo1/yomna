@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Checks a commit subject against the format in AGENTS.md (Commits): `<emoji> [type] scope: subject`.
+# Enable once per clone: git config core.hooksPath .githooks
+# CI runs it on pull request titles too (.github/workflows/pr-title.yml), since squash merges use the title.
+# Usage: .githooks/commit-msg <file with the message>
+set -euo pipefail
+export LC_ALL=C
+
+# First line that isn't a comment or blank.
+subject="$(grep -v '^#' "$1" | grep -v '^[[:space:]]*$' | head -n 1 || true)"
+
+# Subjects git writes itself.
+case "$subject" in
+  "Merge "* | "Revert \""* | "fixup! "* | "squash! "* | "amend! "*) exit 0 ;;
+esac
+
+# Byte-wise matching (LC_ALL=C), so ♻ and ⚡ are listed with and without the emoji variation selector (U+FE0F).
+types='(✨ \[feat\]|🐛 \[fix\]|🔧 \[chore\]|♻️ \[refactor\]|♻ \[refactor\]|🧪 \[test\]|⚡️ \[perf\]|⚡ \[perf\]|📝 \[docs\]|👷 \[ci\]|💄 \[ui\]|🔒 \[security\]|⏪ \[revert\]|🚧 \[wip\])'
+
+if printf '%s\n' "$subject" | grep -Eq "^$types [^ :][^:]*: [^ ]"; then exit 0; fi
+
+cat >&2 <<EOF
+Commit subject doesn't match the format: <emoji> [type] scope: subject
+  got: $subject
+  e.g. ✨ [feat] live: pace draw marks to her voice
+Types: ✨ feat · 🐛 fix · 🔧 chore · ♻️ refactor · 🧪 test · ⚡ perf · 📝 docs · 👷 ci · 💄 ui · 🔒 security · ⏪ revert · 🚧 wip
+See AGENTS.md (Commits).
+EOF
+exit 1

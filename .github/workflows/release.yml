@@ -1,0 +1,344 @@
+# Release: tag a version (e.g. `git tag v0.2.0 && git push origin v0.2.0`) or run it by hand.
+# Builds a macOS DMG (Apple silicon and Intel), a Windows installer and Linux bundles (AppImage, .deb and .rpm), then
+# attaches them and SHA256SUMS to a draft GitHub release for you to review and publish. CI (ci.yml) builds and tests on
+# Linux, macOS and Windows for every push and pull request.
+#
+# Signing is optional. With the Apple secrets (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, KEYCHAIN_PASSWORD, and
+# APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID for notarizing) the Mac builds are signed and notarized. Without them but with
+# MACOS_CERT_P12 and MACOS_CERT_PASSWORD (the "Yomna Self-Signed" code-signing certificate, a base64 .p12) they're
+# signed with that certificate: not notarized, but the designated requirement names the certificate instead of each
+# build's cdhash, so Microphone, Screen Recording and Accessibility grants survive updates. With neither (forks) they're
+# ad-hoc signed. get.sh installs all three fine (curl downloads carry no quarantine flag).
+#
+# Asset names are stable (no version in them) so https://github.com/aammo1/yomna/releases/latest/download/<name>
+# always points at the newest published release. get.sh and get.ps1 download these names and verify SHA256SUMS:
+#   Yomna-macos-arm64.dmg  Yomna-macos-x64.dmg  Yomna-windows-x64-setup.exe
+#   Yomna-linux-x64.AppImage  Yomna-linux-x64.deb  Yomna-linux-x64.rpm
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          # Ubuntu 24.04: ONNX Runtime's prebuilt library (the voice helper) needs glibc 2.38, so this is the oldest
+          # base it links on, and the oldest distros it runs on (Ubuntu 24.04, Fedora 39, Debian 13).
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_SELF_CERT: ${{ secrets.APPLE_CERTIFICATE == '' && secrets.MACOS_CERT_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_ID != '' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: showcase/tauri/sidecar/package-lock.json
+
+      - name: Install sidecar dependencies
+        working-directory: showcase/tauri/sidecar
+        run: npm ci
+
+      - name: Test sidecar
+        working-directory: showcase/tauri/sidecar
+        run: npm test
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            showcase/tauri/src-tauri -> target
+            showcase/tauri/src-tauri/voice-win -> target
+            showcase/tauri/src-tauri/hands-win -> target
+          key: ${{ matrix.target }}
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # Tauri's Linux build dependencies, ALSA for the voice helper, and patchelf with the GStreamer plugins the
+      # AppImage bundles (bundleMediaFramework: spoken replies play through WebKit's GStreamer).
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev patchelf libfuse2t64 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+
+      # Developer ID certificate into a throwaway keychain (removed at the end of the job).
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/build.keychain-db"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          ID=$(security find-identity -v -p codesigning "$KC" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
+          [ -n "$ID" ] || { echo "No Developer ID Application identity in the certificate"; exit 1; }
+          echo "APPLE_SIGNING_IDENTITY=$ID" >> "$GITHUB_ENV"
+
+      # No Developer ID: the stable self-signed certificate into a throwaway keychain (removed at the end of the job).
+      # It's untrusted, so `find-identity -v` hides it; it's found without -v and passed to Tauri by SHA-1, and Tauri
+      # signs the app and every helper in Contents/MacOS with it (hardened runtime, Yomna.entitlements).
+      - name: Import the self-signed signing certificate
+        if: runner.os == 'macOS' && env.HAS_SELF_CERT == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/build.keychain-db"
+          KCPW=$(openssl rand -hex 24)
+          echo "::add-mask::$KCPW"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          ID=$(security find-identity -p codesigning "$KC" | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Yomna Self-Signed".*/\1/p' | head -1)
+          [ -n "$ID" ] || { echo "::error::No \"Yomna Self-Signed\" code-signing identity in MACOS_CERT_P12"; exit 1; }
+          echo "Signing with Yomna Self-Signed ($ID)"
+          echo "APPLE_SIGNING_IDENTITY=$ID" >> "$GITHUB_ENV"
+
+      # The Windows installer needs NSIS, which the bundler downloads from GitHub release links; those can time out
+      # (504) for hours while the API still works. Fetch the same files through the API into the bundler's tools folder
+      # (it skips its own download when they're there, hash-checked). If this fails, the bundler still tries itself.
+      # Versions and hashes are tauri-bundler 2.10's (src/bundle/windows/nsis/mod.rs).
+      - name: Prefetch NSIS for the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA 'tauri'; $tmp = Join-Path $env:RUNNER_TEMP 'nsis'
+          New-Item -ItemType Directory -Force $dir, $tmp | Out-Null
+          try {
+            gh release download nsis-3.13 -R tauri-apps/binary-releases -p nsis-3.13.zip -D $tmp --clobber
+            if ($LASTEXITCODE) { throw 'NSIS download failed' }
+            gh release download nsis_tauri_utils-v0.5.3 -R tauri-apps/nsis-tauri-utils -p nsis_tauri_utils.dll -D $tmp --clobber
+            if ($LASTEXITCODE) { throw 'nsis_tauri_utils download failed' }
+            if ((Get-FileHash (Join-Path $tmp 'nsis-3.13.zip') -Algorithm SHA1).Hash -ne 'DB14F8AF2EA346B786C6AE19343F61AAF5E09B8E') { throw 'NSIS hash mismatch' }
+            if ((Get-FileHash (Join-Path $tmp 'nsis_tauri_utils.dll') -Algorithm SHA1).Hash -ne '75197FEE3C6A814FE035788D1C34EAD39349B860') { throw 'nsis_tauri_utils hash mismatch' }
+            Remove-Item -Recurse -Force (Join-Path $dir 'NSIS'), (Join-Path $dir 'nsis-3.13') -ErrorAction SilentlyContinue
+            Expand-Archive (Join-Path $tmp 'nsis-3.13.zip') -DestinationPath $dir
+            Rename-Item (Join-Path $dir 'nsis-3.13') 'NSIS'
+            $add = Join-Path $dir 'NSIS/Plugins/x86-unicode/additional'
+            New-Item -ItemType Directory -Force $add | Out-Null
+            Copy-Item (Join-Path $tmp 'nsis_tauri_utils.dll') $add
+            Write-Host "NSIS ready in $dir"
+          } catch { Write-Host "Couldn't prefetch NSIS ($_); the bundler will download it itself." }
+
+      # build.sh copies the web files, bundles the sidecar, then runs `cargo tauri build`. On macOS, Tauri
+      # signs with APPLE_SIGNING_IDENTITY (ad-hoc when there's no certificate) and notarizes with
+      # APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID. A missing secret arrives as an empty variable, which Tauri would still
+      # try to use, so those are unset.
+      - name: Build (signed and notarized when the secrets are there)
+        env:
+          TAURI_BUNDLES: ${{ matrix.bundles }}
+          # Tauri skips the Finder layout step (background, icon spots) when CI=true; Actions runners can run it.
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          [ "$HAS_NOTARY" = true ] || unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          ./build.sh release --target ${{ matrix.target }}
+
+      # CI only runs the debug build; this installs the real installer the way users do (silently, per user) and checks
+      # every part landed, the helpers start from where they were installed, and the app starts its sidecar.
+      - name: Smoke test the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw 'No installer was built' }
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode) { throw "The installer failed (exit code $($p.ExitCode))" }
+          $app = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Yomna'), (Join-Path $env:ProgramFiles 'Yomna') -Filter yomna.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $app) { throw 'yomna.exe is not where the installer puts it' }
+          $dir = $app.DirectoryName
+          "Installed in $dir"
+          $missing = @('yomna-node.exe', 'yomna-voice.exe', 'yomna-hands.exe', 'sidecar/sidekick.mjs', 'msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') | Where-Object { -not (Test-Path (Join-Path $dir $_)) }
+          if ($missing) { throw "The installed app is missing: $($missing -join ', ')" }
+          & (Join-Path $dir 'yomna-hands.exe') --self-test
+          if ($LASTEXITCODE) { throw "The installed hands helper failed its self-test ($LASTEXITCODE)" }
+          $perms = & (Join-Path $dir 'yomna-voice.exe') --perms
+          if (-not ($perms -match '"type":"perms"')) { throw "The installed voice helper didn't start: $perms" }
+          # Voice off so the first run doesn't download the voice model.
+          $data = Join-Path $env:RUNNER_TEMP 'yomna-installed'
+          New-Item -ItemType Directory -Force $data | Out-Null
+          Set-Content (Join-Path $data 'sidekick.json') '{"onboarded":true,"setupVersion":2,"voice":false}'
+          $env:YOMNA_DATA_DIR = $data
+          $run = Start-Process -FilePath $app.FullName -PassThru
+          $logs = Join-Path $data 'Yomna/Data/logs' # the old-layout sidekick.json above moves in there first
+          $started = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 1
+            if ($run.HasExited) { break }
+            if (Get-ChildItem $logs -Filter *.log -ErrorAction SilentlyContinue | Select-String -Pattern ' start ' -Quiet) { $started = $true; break }
+          }
+          $alive = -not $run.HasExited
+          if ($alive) { taskkill /PID $run.Id /T /F | Out-Null }
+          if (-not ($started -and $alive)) {
+            Get-Content (Join-Path $env:USERPROFILE 'Yomna/Data/logs/yomna.log') -ErrorAction SilentlyContinue | Select-Object -Last 40
+            throw "The installed Yomna didn't start its sidecar (started: $started, still running: $alive)"
+          }
+          "The installed Yomna started its sidecar (pid $($run.Id))"
+
+      # Tauri notarizes the app inside; the DMG around it is a download of its own that macOS checks too.
+      - name: Notarize the DMG
+        if: runner.os == 'macOS' && env.HAS_NOTARY == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait --timeout 30m
+          xcrun stapler staple "$DMG"
+
+      - name: Check the signature and notarization
+        if: runner.os == 'macOS' && env.HAS_NOTARY == 'true'
+        run: |
+          APP=$(ls -d src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose "$APP"
+          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          xcrun stapler validate "$DMG"
+          spctl -a -t open --context context:primary-signature -v "$DMG"
+
+      - name: Check the app signature and DMG layout
+        if: runner.os == 'macOS'
+        run: |
+          APP=$(ls -d src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          # Signed with a certificate (not ad-hoc): the app and every helper must name it in their designated
+          # requirement, or macOS drops the privacy grants on the next update.
+          if [ "$HAS_APPLE_CERT" = true ] || [ "$HAS_SELF_CERT" = true ]; then
+            for f in "$APP" "$APP"/Contents/MacOS/*; do
+              DR=$(codesign -d -r- "$f" 2>&1 | sed -n 's/^designated => //p')
+              echo "$(basename "$f"): $DR"
+              case "$DR" in *"certificate leaf"*|*"anchor apple generic"*) ;; *) echo "::error::$f isn't signed with the certificate"; exit 1 ;; esac
+            done
+          fi
+          # The installer window layout lives in .DS_Store; without it the DMG opens as a plain folder.
+          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          MNT=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$MNT" "$DMG" >/dev/null
+          ls -la "$MNT"
+          ok=1
+          for f in .DS_Store .background/background.tiff Applications; do [ -e "$MNT/$f" ] || { echo "::error::DMG is missing $f"; ok=0; }; done
+          hdiutil detach -quiet "$MNT"
+          [ $ok -eq 1 ]
+
+      - name: Remove the signing keychain
+        if: always() && runner.os == 'macOS' && (env.HAS_APPLE_CERT == 'true' || env.HAS_SELF_CERT == 'true')
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
+
+      - name: Stage release assets
+        run: |
+          shopt -s nullglob
+          B=src-tauri/target/${{ matrix.target }}/release/bundle
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) P=macos-arm64 ;;
+            x86_64-apple-darwin) P=macos-x64 ;;
+            x86_64-pc-windows-msvc) P=windows-x64 ;;
+            x86_64-unknown-linux-gnu) P=linux-x64 ;;
+            *) echo "::error::No asset name for ${{ matrix.target }}"; exit 1 ;;
+          esac
+          rm -rf release-assets && mkdir -p release-assets
+          files=()
+          stage() {
+            local name="$1"; shift
+            [ $# -gt 0 ] || return 0
+            cp "$1" "release-assets/$name"; files+=("release-assets/$name")
+          }
+          stage "Yomna-$P.dmg" $B/dmg/*.dmg
+          stage "Yomna-$P-setup.exe" $B/nsis/*-setup.exe
+          stage "Yomna-$P.AppImage" $B/appimage/*.AppImage
+          stage "Yomna-$P.deb" $B/deb/*.deb
+          stage "Yomna-$P.rpm" $B/rpm/*.rpm
+          [ ${#files[@]} -gt 0 ] || { echo "No installers were built"; exit 1; }
+          printf 'Staged %s\n' "${files[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yomna-${{ matrix.target }}
+          path: showcase/tauri/release-assets/Yomna-*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: yomna-*
+          merge-multiple: true
+          path: release-assets
+      - name: Attach to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(node -p "require('./showcase/tauri/src-tauri/tauri.conf.json').version")
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" == v* ]]; then
+            [ "$TAG" = "v$VER" ] || { echo "::error::Tag $TAG doesn't match the version in tauri.conf.json ($VER)"; exit 1; }
+          else
+            TAG="v$VER"
+          fi
+          cd release-assets
+          shopt -s nullglob
+          assets=(Yomna-*)
+          [ ${#assets[@]} -gt 0 ] || { echo "::error::No release assets downloaded"; exit 1; }
+          sha256sum "${assets[@]}" > SHA256SUMS
+          cat SHA256SUMS
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Yomna $TAG" --generate-notes
+          gh release upload "$TAG" "${assets[@]}" SHA256SUMS --clobber

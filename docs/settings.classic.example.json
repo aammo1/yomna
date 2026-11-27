@@ -1,0 +1,9 @@
+{
+  "voiceMode": "classic",
+  "harness": "agy",
+  "voice": true,
+  "replies": "voice",
+  "tts": "local",
+  "allowActions": false,
+  "secondBrain": { "root": "~/Notes" }
+}

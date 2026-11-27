@@ -1,0 +1,32 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/yomna-voice",
+      "binaries/yomna-node"
+    ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": [
+          "libasound2",
+          "xdg-utils"
+        ],
+        "recommends": [
+          "libsecret-tools",
+          "libayatana-appindicator3-1"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "alsa-lib",
+          "xdg-utils"
+        ],
+        "recommends": [
+          "libsecret"
+        ]
+      }
+    }
+  }
+}

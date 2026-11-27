@@ -1,0 +1,37 @@
+[package]
+name = "yomna"
+version = "1.0.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Yomna: a harness-powered AI desktop companion"
+repository = "https://github.com/aammo1/yomna"
+homepage = "https://github.com/aammo1/yomna"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.6", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = ["tray-icon", "macos-private-api"] }
+serde_json = "=1.0.154"
+global-hotkey = "=0.10.0"
+tauri-plugin-single-instance = "=2.5.5"
+tauri-plugin-dialog = "=2.8.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-service-management = { version = "=0.3.2", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
+
+# Linux: the overlay's input shape, clipboard and screenshots (GTK, the version Tauri uses), the pointer on X11,
+# and the desktop portal on Wayland (zbus, with futures-core to wait on its signal stream). All are already in
+# Cargo.lock through Tauri and its plugins.
+[target.'cfg(target_os = "linux")'.dependencies]
+futures-core = "=0.3.34"
+gtk = "=0.18.2"
+libc = "=0.2.191"
+x11rb = "=0.14.0"
+zbus = "=6.5.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

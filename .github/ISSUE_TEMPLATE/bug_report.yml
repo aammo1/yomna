@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in Yomna isn't working right.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Yomna version
+      description: Find it in the panel > About.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: e.g. Omarchy / Arch Linux (Hyprland), Windows 11 24H2, macOS 26.1
+    validations:
+      required: true
+  - type: input
+    id: harness
+    attributes:
+      label: CLI harness and voice mode
+      placeholder: e.g. agy (Classic local TTS), opencode (Gemini Live)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics file
+      description: In Yomna, open the panel > General > Help > Save diagnostics (or the tray icon's menu > Save Diagnostics…). It saves a yomna-diagnostics-….log file in Downloads with keys and personal details removed. Drag that file into this box.

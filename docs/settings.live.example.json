@@ -1,0 +1,8 @@
+{
+  "voiceMode": "live",
+  "harness": "agy",
+  "liveModel": "gemini-2.5-flash-native-audio-preview-09-2025",
+  "liveVoice": "Charon",
+  "allowActions": false,
+  "secondBrain": { "root": "~/Notes" }
+}
