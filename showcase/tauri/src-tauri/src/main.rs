@@ -33,6 +33,8 @@ use voice::{init_hotkeys, set_esc, set_hotkey, start_voice, stop_voice, to_voice
 static GENERATION: AtomicUsize = AtomicUsize::new(0);
 /// The overlay window the sidekick lives in. It moves to whichever screen the cursor is on.
 static SIDEKICK_OVERLAY: Mutex<Option<String>> = Mutex::new(None);
+/// Optional CLI flag passed on the first launch (`--talk`, `--ask`, `--list`, `--summon`, `--panel`).
+static STARTUP_ACTION: Mutex<Option<&'static str>> = Mutex::new(None);
 /// The setup guide is open: voice events go to it (for the "try it" test) instead of the agent.
 static ONBOARDING: AtomicBool = AtomicBool::new(false);
 const ONBOARDING_LABEL: &str = "onboarding";
@@ -1684,6 +1686,17 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             if let Some(items) = msg.get("items").and_then(Value::as_array) {
                 set_menu(app, items);
             }
+            let pending = {
+                let mut slot = STARTUP_ACTION.lock().unwrap();
+                if slot.as_ref() != Some(&"talk") { slot.take() } else { None }
+            };
+            if let Some(action) = pending {
+                match action {
+                    "summon" => to_overlays(app, &json!({ "kind": "summon" })),
+                    "panel" => show_panel(app, None, false),
+                    other => to_sidecar(app, &json!({ "type": "cli", "action": other })),
+                }
+            }
         }
         Some("ui") => {
             if let Some(m) = msg.get("msg") {
@@ -1791,8 +1804,16 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
                 // Live mode: the chord's tap opens or hangs up a Gemini Live call (macOS, Linux, and Windows helpers).
                 let live = msg.get("live").and_then(Value::as_bool) == Some(true);
                 to_voice(app, &json!({ "cmd": "live_mode", "on": live }));
+                if STARTUP_ACTION.lock().unwrap().as_ref() == Some(&"talk") {
+                    *STARTUP_ACTION.lock().unwrap() = None;
+                    to_sidecar(app, &json!({ "type": "cli", "action": "talk" }));
+                }
             } else {
                 stop_voice(app);
+                if STARTUP_ACTION.lock().unwrap().as_ref() == Some(&"talk") {
+                    *STARTUP_ACTION.lock().unwrap() = None;
+                    to_sidecar(app, &json!({ "type": "cli", "action": "talk" }));
+                }
             }
         }
         Some("overlays") => {
@@ -1841,6 +1862,8 @@ fn second_launch(app: &AppHandle, args: &[String]) {
 fn main() {
     #[cfg(target_os = "linux")]
     linux::init();
+    let launch_args: Vec<String> = std::env::args().collect();
+    *STARTUP_ACTION.lock().unwrap() = cli_action(&launch_args);
     tauri::Builder::default()
         // Must be the first plugin. A second launch (say, straight from the DMG) quits and tells this one what it wanted.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -1914,6 +1937,10 @@ fn main() {
             #[cfg(target_os = "macos")]
             fullscreen::watch(app.handle().clone());
             spawn_sidecar(app.handle());
+            if STARTUP_ACTION.lock().unwrap().as_ref() == Some(&"panel") {
+                *STARTUP_ACTION.lock().unwrap() = None;
+                show_panel(app.handle(), None, false);
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
