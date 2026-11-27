@@ -2026,6 +2026,10 @@ async function onCli(action) {
   if (action === 'list') return showList({ seconds: 20, toggle: true });
   if (action === 'ask') return onMenu('ask');
   if (action !== 'talk' || !VOICE_OK) return;
+  if (liveTalk()) {
+    if (!liveCall.open) { interruptQuietly('live'); speech.stop(); }
+    return liveCall.toggle().catch((e) => console.error('live', e));
+  }
   if (!config.voice) return say(`Voice is off. Switch it on on the Listening page in ${PANEL}.`, 'happy');
   if (!voiceReady()) return startVoiceDownload();
   send({ type: 'talk_toggle' });
