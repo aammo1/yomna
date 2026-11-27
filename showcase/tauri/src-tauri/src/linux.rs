@@ -73,19 +73,6 @@ fn hit_rects(flat: &[f64]) -> Vec<(i32, i32, i32, i32)> {
         .collect()
 }
 
-fn pad_rects(rects: &[(i32, i32, i32, i32)], pad: i32) -> Vec<(i32, i32, i32, i32)> {
-    rects
-        .iter()
-        .map(|&(x, y, w, h)| {
-            let nx = (x - pad).max(0);
-            let ny = (y - pad).max(0);
-            let nw = w + pad + (x - nx);
-            let nh = h + pad + (y - ny);
-            (nx, ny, nw, nh)
-        })
-        .collect()
-}
-
 /// Makes the rectangles the overlay's input shape: clicks land on them and pass through everywhere else. No cursor
 /// tracking is involved, so it works on Wayland too, where the cursor can't be seen over other apps.
 pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64]) {
@@ -97,26 +84,16 @@ pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64]) {
         eprintln!("hit rects: {rects:?}");
     }
     let w = window.clone();
-    let clip_shape = unmanaged_overlay();
     let _ = window.run_on_main_thread(move || {
         let Some(win) = w.gtk_window().ok().and_then(|g| g.window()) else { return };
         // GDK works in the same logical pixels as the page.
         let list: Vec<RectangleInt> = rects.iter().map(|&(x, y, w, h)| RectangleInt::new(x, y, w, h)).collect();
         let region = Region::create_rectangles(&list);
         win.input_shape_combine_region(&region, 0, 0);
-        // On bare X11 (no compositor) transparent areas draw black; on tiling Wayland compositors with blur:popups
-        // enabled (e.g. Hyprland), an unclipped fullscreen override-redirect window blurs the whole desktop even when
-        // Yomna has faded out. Clip the bounding shape to empty when idle, or padded rects around visible UI.
+        // No compositor (a bare X11 window manager): the transparent parts would draw black over the whole screen,
+        // so the window is cut down to the same rectangles.
         if !win.screen().is_composited() {
             win.shape_combine_region(Some(&region), 0, 0);
-        } else if clip_shape {
-            if rects.is_empty() {
-                win.shape_combine_region(Some(&region), 0, 0);
-            } else {
-                let padded: Vec<RectangleInt> = pad_rects(&rects, 48).iter().map(|&(x, y, w, h)| RectangleInt::new(x, y, w, h)).collect();
-                let shape = Region::create_rectangles(&padded);
-                win.shape_combine_region(Some(&shape), 0, 0);
-            }
         }
     });
 }

@@ -38,13 +38,28 @@ bind = SUPER CTRL, Y, exec, yomna --panel
 
 Note: In Wayland mode, `yomna --talk` toggles recording (press once to speak, press again or pause to send).
 
-## 3. Optional Hyprland window rules
+## 3. Hyprland window rules (Prevent backdrop blur on Omarchy)
 
-Yomna automatically sets its desktop overlay to override-redirect on Hyprland so it floats above tiled windows without compositor interference (`YOMNA_UNMANAGED=0` disables this if needed). If your Hyprland theme adds borders, shadows, or blur to the floating Yomna panel or setup window, add optional rules to `~/.config/hypr/hyprland.conf`:
+Omarchy enables Hyprland backdrop blur (`decoration.blur.enabled` and `blur.popups`) by default. Add this Lua rule to `~/.config/hypr/hyprland.lua` (and run `hyprctl reload`) so Yomna's transparent overlay never blurs your desktop:
+
+```lua
+-- ~/.config/hypr/hyprland.lua (Omarchy / Hyprland Lua)
+o.window({ class = "^([Yy]omna|com\\.aammo1\\.yomna)$", title = "^Yomna$" }, {
+  float = true,
+  pin = true,
+  decorate = false,
+  border_size = 0,
+  no_blur = true,
+  no_shadow = true,
+  no_anim = true,
+})
+```
+
+For classic non-Lua Hyprland configs (`~/.config/hypr/hyprland.conf`), add:
 
 ```ini
 # Hyprland < 0.53 (windowrulev2)
-windowrulev2 = float, class:^(com\.aammo1\.yomna|yomna)$
+windowrulev2 = float, class:^(com\.aammo1\.yomna|[Yy]omna)$
 windowrulev2 = noborder, title:^(Yomna)$
 windowrulev2 = noshadow, title:^(Yomna)$
 windowrulev2 = noblur, title:^(Yomna)$
