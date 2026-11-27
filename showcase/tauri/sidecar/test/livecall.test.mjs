@@ -473,4 +473,35 @@ const setup = ({ tools = [], key = 'k', answer = null, newTurn, now } = {}) => {
   assert.match(rust, /Some\("live_cancel"\) => Some\(json!\(\{ "type": "live_cancel" \}\)\)/, 'the shell passes live_cancel straight to the sidecar');
 }
 
+{ // muteWhileTalking suppresses speaker echo while Yomna is speaking (no self-cutoff, sends digital silence), then unmutes after playback tail.
+  let t0 = 5_000_000;
+  const tr = fakeTransport();
+  const uis = [];
+  const call = createLiveCall({
+    makeBrain: async (emit) => createLiveBrain({ emit, connect: tr.connect, key: 'k', tools: [], system: () => '' }),
+    ui: (m) => uis.push(m), send: () => {}, ask: async () => null, toClassic: () => {},
+    muteWhileTalking: () => true,
+    now: () => t0,
+  });
+  await call.toggle();
+  await until(() => tr.calls.length === 1);
+  // 500ms of 24 kHz s16le audio (24,000 bytes)
+  const outPcm = Buffer.alloc(24_000).toString('base64');
+  tr.calls[0].server({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: outPcm } }] } } });
+  // Loud 200ms mic chunk (loud speaker echo) arrives while she speaks
+  const loudBuf = Buffer.alloc(6400);
+  for (let i = 0; i < 3200; i++) loudBuf.writeInt16LE(12000, i * 2);
+  const loudB64 = loudBuf.toString('base64');
+  call.pcm(loudB64);
+  assert.equal(uis.some((m) => m.kind === 'speech' && m.stop), false, 'speaker echo must not stop her speech');
+  const sentDuring = tr.calls[0].sent.at(-1).realtime.audio.data;
+  assert.equal(Buffer.from(sentDuring, 'base64').every((b) => b === 0), true, 'pushes silence while speaking');
+  tr.calls[0].server({ serverContent: { turnComplete: true } });
+  // Past 500ms playback + 350ms echo tail -> mic resumes normal audio
+  t0 += 1000;
+  call.pcm(loudB64);
+  assert.equal(tr.calls[0].sent.at(-1).realtime.audio.data, loudB64, 'mic resumes after playback tail');
+  call.hangUp('tap');
+}
+
 console.log('livecall tests passed');

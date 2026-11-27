@@ -199,19 +199,13 @@ test('AgyAdapter injects mcpConfigPath via --settings, streams NDJSON events, an
       const sIdx = args.indexOf('--settings');
       const settingsFile = sIdx >= 0 ? args[sIdx + 1] : null;
       const settings = settingsFile ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : null;
-      let stdin = '';
-      process.stdin.setEncoding('utf8');
-      process.stdin.on('data', (d) => (stdin += d));
-      process.stdin.on('end', () => {
-        fs.writeFileSync(${JSON.stringify(capturedPath)}, JSON.stringify({ args, settingsFile, settings, stdin }));
-        console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'agy-sess-42' }));
-        console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Checking...' } } }));
-        console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hello ' } } }));
-        console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'capture_screen', input: { display: 0 } }] } }));
-        console.log(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false }] } }));
-        console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'world!' } } }));
-        console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'Hello world!' }));
-      });
+      const pIdx = args.indexOf('-p');
+      const promptArg = pIdx >= 0 ? args[pIdx + 1] : '';
+      fs.writeFileSync(${JSON.stringify(capturedPath)}, JSON.stringify({ args, settingsFile, settings, promptArg }));
+      console.log(JSON.stringify({ event: 'init', conversation_id: 'agy-sess-42' }));
+      console.log(JSON.stringify({ event: 'step_update', step_update: { step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'Hello ' } }));
+      console.log(JSON.stringify({ event: 'step_update', step_update: { step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'world!' } }));
+      console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'agy-sess-42', status: 'SUCCESS', response: 'Hello world!' } }));
       `,
     );
 
@@ -229,10 +223,7 @@ test('AgyAdapter injects mcpConfigPath via --settings, streams NDJSON events, an
 
     assert.deepEqual(events, [
       { type: 'session', sessionId: 'agy-sess-42' },
-      { type: 'thinking_delta', text: 'Checking...' },
       { type: 'text_delta', text: 'Hello ' },
-      { type: 'tool_start', id: 't1', name: 'capture_screen', args: { display: 0 } },
-      { type: 'tool_end', id: 't1', name: 'capture_screen', ok: true, output: 'ok' },
       { type: 'text_delta', text: 'world!' },
       { type: 'done', text: 'Hello world!' },
     ]);
@@ -242,8 +233,9 @@ test('AgyAdapter injects mcpConfigPath via --settings, streams NDJSON events, an
       command: 'node',
       args: ['mcp-desktop.mjs'],
     });
+    assert.equal(captured.args.includes('--input-format'), false, 'must not pass --input-format after --print');
     assert.equal(fs.existsSync(captured.settingsFile), false, 'temp --settings file should be cleaned up');
-    assert.match(captured.stdin, /<system_instructions>[\s\S]*Be concise\.[\s\S]*What is on screen\?/);
+    assert.match(captured.promptArg, /<system_instructions>[\s\S]*Be concise\.[\s\S]*What is on screen\?/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

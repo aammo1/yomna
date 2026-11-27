@@ -443,7 +443,7 @@ export function createStreamJsonMapper() {
   const toolNames = new Map();
 
   const maybeSession = (obj, out) => {
-    const sid = obj?.session_id ?? obj?.sessionId ?? obj?.conversation_id;
+    const sid = obj?.session_id ?? obj?.sessionId ?? obj?.conversation_id ?? obj?.result?.conversation_id ?? obj?.step_update?.conversation_id;
     if (typeof sid === 'string' && sid && !emittedSession) {
       emittedSession = true;
       out.push({ type: 'session', sessionId: sid });
@@ -461,6 +461,46 @@ export function createStreamJsonMapper() {
       if (!obj || typeof obj !== 'object') return [];
       const out = [];
       maybeSession(obj, out);
+
+      // Antigravity (`agy --output-format stream-json`) emits { event: 'init' | 'step_update' | 'result', ... }
+      if (obj.event === 'step_update' && obj.step_update && typeof obj.step_update === 'object') {
+        const su = obj.step_update;
+        if (su.step_type === 'agent_response' && su.text_delta) {
+          const text = String(su.text_delta);
+          accumulatedText += text;
+          out.push({ type: 'text_delta', text });
+        } else if (su.thinking_delta) {
+          out.push({ type: 'thinking_delta', text: String(su.thinking_delta) });
+        } else if (su.tool_call) {
+          const id = String(su.tool_call.id ?? su.step_index ?? '');
+          const name = String(su.tool_call.name ?? 'tool');
+          if (su.state === 'ACTIVE' && !toolNames.has(id)) {
+            toolNames.set(id, name);
+            out.push({ type: 'tool_start', id, name, args: su.tool_call.args ?? {} });
+          } else if (su.state === 'DONE') {
+            out.push({ type: 'tool_end', id, name: toolNames.get(id) ?? name, ok: !su.error, ...(su.output !== undefined ? { output: String(su.output) } : {}) });
+          }
+        }
+        return out;
+      }
+
+      if (obj.event === 'result' && obj.result && typeof obj.result === 'object') {
+        const r = obj.result;
+        if (r.status === 'ERROR' || r.error) {
+          const msg = String(r.error || r.response || 'Harness returned an error.');
+          out.push({
+            type: 'error',
+            reason: AUTH_ERROR_RE.test(msg) ? 'auth' : 'crashed',
+            message: msg,
+            suggestSwitch: true,
+          });
+        } else {
+          emittedDone = true;
+          const finalText = typeof r.response === 'string' && r.response ? r.response : accumulatedText;
+          out.push({ type: 'done', text: finalText });
+        }
+        return out;
+      }
 
       if (obj.type === 'stream_event' && obj.event) {
         const ev = obj.event;

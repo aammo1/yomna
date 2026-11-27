@@ -1127,6 +1127,7 @@ const liveCall = createLiveCall({
   hangUpHint: () => (HOTKEYS_OK ? `tap ${talkWords()} or Esc to hang up` : ''),
   newTurn: startRequest,
   log: logLine,
+  muteWhileTalking: () => config.muteWhileTalking !== false,
   inkStarted: (id, seg) => ink.started(id, seg),
   // A hung-up call gets the memory pass a Classic conversation gets when it ends (logged as memory, why live_<how>).
   onEnd: (messages, why) => {

@@ -26,6 +26,8 @@ export const DRAW_HOLD_MS = 5000;
 // reply plays stops it before Gemini's `interrupted` arrives. A guess: needs a real-mic calibration pass by Eric (echo
 // cancellation leaves some of her own voice in; too low and she cuts herself off, too high and she talks over him).
 export const CUT_IN = { rms: 0.04, holdMs: 150 };
+// Extra ms after predicted playback end before unmuting mic when muteWhileTalking is active (covers WebAudio buffer + room tail).
+export const ECHO_TAIL_MS = 350;
 // After a hang-up the wake word waits until her voice sent so far has had time to play, plus this long, so her goodbye
 // ("Very good, Yomna signing off") can't open a new call.
 export const WAKE_SETTLE_MS = 1000;
@@ -49,7 +51,7 @@ const frameLevel = (data) => {
  * the tools and what they returned), for the memory pass Classic runs when a conversation ends; only when he said
  * enough (MIN_LEARN_CHARS), and never when the app quits.
  */
-export function createLiveCall({ makeBrain, ui, send, ask, toClassic, anim = () => null, hangUpHint = '', newTurn = () => {}, log = () => {}, inkStarted = () => {}, onEnd = () => {}, holdMs = DRAW_HOLD_MS, cutIn = CUT_IN, now = Date.now }) {
+export function createLiveCall({ makeBrain, ui, send, ask, toClassic, anim = () => null, hangUpHint = '', newTurn = () => {}, log = () => {}, inkStarted = () => {}, onEnd = () => {}, muteWhileTalking = () => false, holdMs = DRAW_HOLD_MS, cutIn = CUT_IN, now = Date.now }) {
   let brain = null, call = 0, capturing = false, opening = false;
   let ready = false, pending = []; // ready: the call is up; pending: crops waiting for it
   let turn = null; // her reply on screen: { shown, speech }
@@ -98,6 +100,7 @@ export function createLiveCall({ makeBrain, ui, send, ask, toClassic, anim = () 
     ui({ kind: 'speech', stop: true });
     endTurn();
     speechId = null;
+    playEnd = 0;
     ui({ kind: 'live', state: 'closed' });
   };
 
@@ -133,6 +136,7 @@ export function createLiveCall({ makeBrain, ui, send, ask, toClassic, anim = () 
         flushDraws();
         ui({ kind: 'speech', stop: true });
         speechId = null;
+        playEnd = 0;
         endTurn();
         return;
       case 'caption':
@@ -231,14 +235,23 @@ export function createLiveCall({ makeBrain, ui, send, ask, toClassic, anim = () 
     fail,
     pcm(data) {
       if (!brain) return;
-      brain.pushAudio(data);
       const { rms, ms } = frameLevel(data);
-      stats.ms += ms; stats.sq += rms * rms * ms; stats.peak = Math.max(stats.peak, rms);
+      stats.ms += ms;
+      const speakingNow = !!speechId || now() < playEnd + ECHO_TAIL_MS;
+      if (muteWhileTalking() && speakingNow) {
+        // Suppress speaker echo so Yomna doesn't self-interrupt on Linux/Windows without hardware AEC.
+        loudMs = 0;
+        const silent = Buffer.alloc(Buffer.byteLength(data ?? '', 'base64')).toString('base64');
+        brain.pushAudio(silent);
+        return;
+      }
+      brain.pushAudio(data);
+      stats.sq += rms * rms * ms; stats.peak = Math.max(stats.peak, rms);
       if (!speechId) { loudMs = 0; return; }
       loudMs = rms >= cutIn.rms ? loudMs + ms : 0;
       if (loudMs < cutIn.holdMs) return;
       // He's talking over her: stop her now; Gemini's `interrupted` follows and ends the turn.
-      loudMs = 0; cutId = speechId; speechId = null;
+      loudMs = 0; cutId = speechId; speechId = null; playEnd = 0;
       ui({ kind: 'speech', stop: true });
     },
     pushImage(data, mimeType) { brain?.pushImage(data, mimeType); },

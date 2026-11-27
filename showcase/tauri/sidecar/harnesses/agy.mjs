@@ -23,6 +23,7 @@ export function buildAgySettings({ mcpConfigPath, mcpServer } = {}) {
 }
 
 export function buildAgyArgs({
+  prompt = '',
   allowActions = false,
   secondBrainDirs = [],
   settingsPath,
@@ -30,9 +31,6 @@ export function buildAgyArgs({
   model,
 } = {}) {
   const args = [
-    '--print',
-    '--input-format',
-    'stream-json',
     '--output-format',
     'stream-json',
     ...(allowActions ? ['--mode', 'accept-edits'] : ['--mode', 'plan', '--sandbox']),
@@ -43,31 +41,22 @@ export function buildAgyArgs({
     if (dir) args.push('--add-dir', dir);
   }
   if (settingsPath) args.push('--settings', settingsPath);
+  args.push('-p', prompt);
   return args;
 }
 
-function buildStreamInput({ prompt, systemPrompt, images }) {
-  const text = formatPromptWithSystem(prompt, systemPrompt);
-  if (!Array.isArray(images) || !images.length) {
-    return `${JSON.stringify({ type: 'user', message: { role: 'user', content: text } })}\n`;
-  }
-  const content = [{ type: 'text', text }];
-  for (const img of images) {
-    if (img && typeof img === 'object' && img.data) {
-      content.push({
-        type: 'image',
-        source: { type: 'base64', media_type: img.mediaType || 'image/png', data: img.data },
-      });
-    } else if (typeof img === 'string' && fs.existsSync(img)) {
-      const ext = path.extname(img).toLowerCase();
-      const mediaType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
-      content.push({
-        type: 'image',
-        source: { type: 'base64', media_type: mediaType, data: fs.readFileSync(img).toString('base64') },
-      });
+function buildPromptText({ prompt, systemPrompt, images }) {
+  let text = formatPromptWithSystem(prompt, systemPrompt);
+  if (Array.isArray(images) && images.length) {
+    const refs = [];
+    for (const img of images) {
+      if (typeof img === 'string' && fs.existsSync(img)) refs.push(img);
+    }
+    if (refs.length) {
+      text += `\n\nAttached image file(s):\n${refs.map((p) => `- ${p}`).join('\n')}`;
     }
   }
-  return `${JSON.stringify({ type: 'user', message: { role: 'user', content } })}\n`;
+  return text || ' ';
 }
 
 export class AgyAdapter extends HarnessAdapter {
@@ -166,21 +155,21 @@ export class AgyAdapter extends HarnessAdapter {
     const mapper = createStreamJsonMapper();
 
     try {
+      const promptText = buildPromptText({ prompt, systemPrompt, images });
       const args = buildAgyArgs({
+        prompt: promptText,
         allowActions,
         secondBrainDirs,
         settingsPath: tempSettings?.path,
         sessionId,
         model: this.model,
       });
-      const stdinData = buildStreamInput({ prompt, systemPrompt, images });
 
       yield* runCliTurn({
         bin: binPath,
         args,
         cwd,
         env,
-        stdinData,
         hangMs: hangTimeoutMs(hangTimeoutOverride ?? this.hangTimeoutMs),
         label: this.label,
         signal: turn.signal,
