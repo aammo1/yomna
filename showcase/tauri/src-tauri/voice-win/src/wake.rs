@@ -3,7 +3,7 @@
 // ("Hey Friday"); the greeting stays, so the name alone in a sentence never wakes it.
 
 const GREETINGS: [&str; 5] = ["hey", "hi", "hay", "heya", "hiya"];
-const DEFAULT_NAMES: [&str; 1] = ["yomna"];
+const DEFAULT_NAMES: [&str; 4] = ["yomna", "yumna", "yomnah", "youmna"];
 
 pub struct WakeWord {
     names: Vec<String>,
@@ -190,6 +190,8 @@ mod tests {
             ("HEY YOMNA! What's on today?", Some("What's on today?")),
             ("Hey Yomna\u{2019} open notes", Some("open notes")),
             ("Hey Yonna", None),
+            ("Hey Yumna, open Mail", Some("open Mail")),
+            ("Hey Yomnah!", Some("")),
             ("Hey Jonah", None),
             ("Hey Service", None),
             ("Hey Yona is ready", None),
