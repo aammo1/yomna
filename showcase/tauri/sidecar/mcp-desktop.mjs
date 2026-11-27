@@ -733,11 +733,16 @@ export function runStdioRelay(socketPath, { stdin = process.stdin, stdout = proc
 const isMain = (() => {
   const arg1 = process.argv[1];
   if (!arg1) return false;
+  let resolved = '';
   try {
-    return fileURLToPath(import.meta.url) === fs.realpathSync(arg1);
+    resolved = fs.realpathSync(arg1);
   } catch {
-    return path.resolve(arg1) === fileURLToPath(import.meta.url);
+    resolved = path.resolve(arg1);
   }
+  const sameFile = fileURLToPath(import.meta.url) === resolved;
+  if (!sameFile) return false;
+  // When bundled into dist/sidekick.mjs, import.meta.url matches sidekick.mjs; only run CLI relay when invoked as mcp-desktop.mjs or with --relay.
+  return path.basename(resolved) === 'mcp-desktop.mjs' || process.argv[2] === '--relay';
 })();
 
 if (isMain) {
