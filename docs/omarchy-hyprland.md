@@ -14,29 +14,41 @@ Optional extras:
 - `ydotool` — fallback for pointer clicks/drags when `wtype` is unavailable (requires the `ydotoold` user service).
 - `libsecret` — provides `secret-tool` for storing optional Gemini Live keys in your keyring.
 
-## 2. Hyprland keybindings (`~/.config/hypr/bindings.conf`)
+## 2. Hyprland keybindings
 
-Wayland prevents apps from grabbing global shortcuts or reading modifier holds over other windows. Bind Yomna's CLI triggers in `~/.config/hypr/bindings.conf` (or `~/.config/hypr/hyprland.conf`) and reload Hyprland (`hyprctl reload`):
+Wayland prevents apps from grabbing global shortcuts or reading modifier holds over other windows. Bind Yomna's CLI triggers and reload Hyprland (`hyprctl reload`).
+
+**Omarchy Lua (`~/.config/hypr/bindings.lua`):**
+
+```lua
+-- Yomna AI desktop companion (avoids SUPER + SHIFT + Y, which Omarchy binds to YouTube)
+o.bind("SUPER + Y", "Yomna Start / Pause talk", "yomna --talk")
+o.bind("SUPER + ALT + Y", "Yomna Show / Hide", "yomna --summon")
+o.bind("SUPER + CTRL + Y", "Yomna Settings panel", "yomna --panel")
+o.bind("SUPER + CTRL + SHIFT + Y", "Yomna Stop completely", "pkill -x yomna")
+```
+
+**Classic Hyprland config (`~/.config/hypr/bindings.conf` or `~/.config/hypr/hyprland.conf`):**
 
 ```ini
-# Yomna shortcuts (adjust modifiers/keys to match your Omarchy bindings)
-bindd = SUPER, Y, Talk to Yomna, exec, yomna --talk
-bindd = SUPER SHIFT, Y, Ask Yomna, exec, yomna --ask
-bindd = SUPER ALT, Y, Show or hide Yomna, exec, yomna --summon
-bindd = SUPER CTRL, Y, Open Yomna panel, exec, yomna --panel
+# Yomna shortcuts (adjust modifiers/keys to match your setup)
+bindd = SUPER, Y, Yomna Start / Pause talk, exec, yomna --talk
+bindd = SUPER ALT, Y, Yomna Show / Hide, exec, yomna --summon
+bindd = SUPER CTRL, Y, Yomna Settings panel, exec, yomna --panel
+bindd = SUPER CTRL SHIFT, Y, Yomna Stop completely, exec, pkill -x yomna
 bindd = SUPER ALT, L, Yomna reminders list, exec, yomna --list
 ```
 
-If you prefer plain Hyprland `bind` syntax instead of Omarchy's `bindd`:
+If you prefer plain Hyprland `bind` syntax instead of `bindd`:
 
 ```ini
 bind = SUPER, Y, exec, yomna --talk
-bind = SUPER SHIFT, Y, exec, yomna --ask
 bind = SUPER ALT, Y, exec, yomna --summon
 bind = SUPER CTRL, Y, exec, yomna --panel
+bind = SUPER CTRL SHIFT, Y, exec, pkill -x yomna
 ```
 
-Note: In Wayland mode, `yomna --talk` toggles recording (press once to speak, press again or pause to send).
+Note: In Wayland mode, `yomna --talk` starts Yomna and begins talking/Live call immediately; pressing it again pauses or hangs up.
 
 ## 3. Hyprland window rules (Prevent backdrop blur on Omarchy)
 
