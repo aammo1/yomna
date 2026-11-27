@@ -217,7 +217,7 @@ const freshTools = ({ actions = true, goals = false } = {}) => {
 const actsNow = () => handsCalls().filter((c) => c[0] === 'act').map((c) => JSON.parse(c[1]));
 if (HANDS_OK) {
   fs.writeFileSync(path.join(brain, '_context', 'index.md'), '# Index\nJarvis ships v0.2.6 with the loop guard.\n- [[youtube]]: _context/youtube.md, Eric and his channel\n');
-  fs.writeFileSync(path.join(brain, '_context', 'youtube.md'), '# YouTube\nOwner: Eric Tech\nChannel name: Eric Tech | AI Builder\nChannel: https://www.youtube.com/@EricTech\n');
+  fs.writeFileSync(path.join(brain, '_context', 'youtube.md'), '# YouTube\nOwner: Alex Reed\nChannel name: Alex Reed | AI Builder\nChannel: https://www.youtube.com/@AlexReed\n');
 }
 
 if (HANDS_OK) await cp('CP-11 fill-in from the second brain: read_window, the index, the note, then act_in_app types each answer under its question', async () => {
@@ -235,7 +235,7 @@ if (HANDS_OK) await cp('CP-11 fill-in from the second brain: read_window, the in
   for (const x of r) assert.ok(x.ok, text(x.result));
   for (const x of r) assert.match(x.result, /^In Chrome: click_text, key, key, type\./);
   const a = actsNow();
-  assert.deepEqual(a.map((x) => x.steps.find((st) => st.do === 'type').text), [' Eric Tech', ' Eric Tech | AI Builder', ` ${TODAY}`], 'each value typed');
+  assert.deepEqual(a.map((x) => x.steps.find((st) => st.do === 'type').text), [' Alex Reed', ' Alex Reed | AI Builder', ` ${TODAY}`], 'each value typed');
   assert.deepEqual(a.map((x) => x.steps[0].text), ['What is my name?', 'What is my YouTube Channel Name?', "What's today's date?"], 'each at its own question');
   assert.ok(a.every((x) => x.steps[1].key === 'down' && x.steps[2].key === 'end'), 'on the "-" line under it');
   fs.rmSync(textsFile);
@@ -244,14 +244,14 @@ if (HANDS_OK) await cp('CP-11 fill-in from the second brain: read_window, the in
 if (HANDS_OK) await cp('CP-11b fill-in on a canvas doc: click_text finds nothing, the words read off the screen give a real-cursor click_at', async () => {
   made.nextTurn?.();
   fs.writeFileSync(handsLog, ''); fs.writeFileSync(canvasFile, JSON.stringify(DOC));
-  const [found] = await play([['act_in_app', { target: 'browser', steps: [{ do: 'click_text', text: 'What is my name?' }, { do: 'key', key: 'down' }, { do: 'key', key: 'end' }, { do: 'type', text: ' Eric Tech' }] }]]);
+  const [found] = await play([['act_in_app', { target: 'browser', steps: [{ do: 'click_text', text: 'What is my name?' }, { do: 'key', key: 'down' }, { do: 'key', key: 'end' }, { do: 'type', text: ' Alex Reed' }] }]]);
   assert.ok(found.ok, text(found.result));
   assert.match(found.result, /^In Chrome: clicked "What is my name\?" \(read off the screen\), key, key, type\./);
   assert.ok(handsCalls().some((c) => c[0] === 'ocr-find' && c[2] === 'What is my name?'), 'the window is read for the words');
   const a = actsNow();
   assert.deepEqual(a.map((x) => x.steps.map((st) => st.do)), [['click_text', 'key', 'key', 'type'], ['click_at', 'key', 'key', 'type']], 'the plan, then its rest from a click on the words');
   assert.deepEqual([a[1].steps[0].x, a[1].steps[0].y, a[1].steps[0].global, a[1].steps[0].real], [200, 159, true, true], 'the middle of the words, in screen points, with the real cursor');
-  assert.deepEqual([a[1].steps[1].key, a[1].steps[2].key, a[1].steps[3].text], ['down', 'end', ' Eric Tech']);
+  assert.deepEqual([a[1].steps[1].key, a[1].steps[2].key, a[1].steps[3].text], ['down', 'end', ' Alex Reed']);
   // "What is my name?" is inside no other line, but "date" would be: the whole question line wins.
   fs.writeFileSync(handsLog, '');
   const [d] = await play([['act_in_app', { target: 'browser', steps: [{ do: 'click_text', text: "What's today's date?" }, { do: 'key', key: 'down' }, { do: 'type', text: ` ${TODAY}` }] }]]);
@@ -262,25 +262,25 @@ if (HANDS_OK) await cp('CP-11b fill-in on a canvas doc: click_text finds nothing
 
 if (HANDS_OK) await cp('CP-11c permissions: with Allow File Edits off the brain is still read, act_in_app is refused with the Allow message; on, it types', async () => {
   fs.writeFileSync(handsLog, ''); fs.writeFileSync(textsFile, JSON.stringify(DOC));
-  const fill = ['act_in_app', { target: 'front', steps: [{ do: 'click_text', text: 'What is my name?' }, { do: 'key', key: 'down' }, { do: 'type', text: ' Eric Tech' }] }];
+  const fill = ['act_in_app', { target: 'front', steps: [{ do: 'click_text', text: 'What is my name?' }, { do: 'key', key: 'down' }, { do: 'type', text: ' Alex Reed' }] }];
   const off = await freshTools({ actions: false })([
     ['read_file', { path: '_context/index.md' }], ['read_file', { path: '_context/youtube.md' }], ['search_files', { pattern: 'Owner', dir: '_context' }], ['list_files', { dir: '_context' }], ['read_window', { target: 'front' }], fill,
   ]);
   assert.deepEqual(off.map((x) => x.ok), [true, true, true, true, true, false], JSON.stringify(off.map((x) => text(x.result).slice(0, 80))));
-  assert.match(off[1].result, /Owner: Eric Tech/, 'the brain is read with actions off');
-  assert.match(off[2].result, /youtube\.md:2:Owner: Eric Tech/, 'and searched');
+  assert.match(off[1].result, /Owner: Alex Reed/, 'the brain is read with actions off');
+  assert.match(off[2].result, /youtube\.md:2:Owner: Alex Reed/, 'and searched');
   assert.match(off[5].result, /turn on "Allow File Edits & Commands"/, 'typing is what the switch stops, and the model is told which switch');
   assert.equal(actsNow().length, 0, 'nothing reached the hands helper');
   const on = await freshTools({ actions: true })([fill]);
   assert.ok(on[0].ok, text(on[0].result));
-  assert.deepEqual(actsNow().map((x) => x.steps.at(-1).text), [' Eric Tech'], 'with it on, it types');
+  assert.deepEqual(actsNow().map((x) => x.steps.at(-1).text), [' Alex Reed'], 'with it on, it types');
   fs.rmSync(textsFile);
 });
 
 if (HANDS_OK) await cp('CP-11d v0.2.8 replay: click_text no_visible_text x3 then click_at on the canvas doc, guarded as sidekick.mjs wires it', async () => {
   // The log's sequence, against the same canvas doc and a goals-on loop guard (one request).
-  const tries = ['What is my name?', '1. What is my name?', 'What is my name'].map((t) => ['act_in_app', { target: 'browser', steps: [{ do: 'click_text', text: t }, { do: 'key', key: 'down' }, { do: 'type', text: ' Eric Tech' }] }]);
-  const pixels = ['act_in_app', { target: 'browser', steps: [{ do: 'click_at', x: 200, y: 179 }, { do: 'key', key: 'end' }, { do: 'type', text: ' Eric Tech' }] }];
+  const tries = ['What is my name?', '1. What is my name?', 'What is my name'].map((t) => ['act_in_app', { target: 'browser', steps: [{ do: 'click_text', text: t }, { do: 'key', key: 'down' }, { do: 'type', text: ' Alex Reed' }] }]);
+  const pixels = ['act_in_app', { target: 'browser', steps: [{ do: 'click_at', x: 200, y: 179 }, { do: 'key', key: 'end' }, { do: 'type', text: ' Alex Reed' }] }];
   fs.writeFileSync(canvasFile, JSON.stringify(DOC));
   // Now: each click_text is found by reading the screen, so nothing fails, and the click_at runs too.
   fs.writeFileSync(handsLog, '');
@@ -288,7 +288,7 @@ if (HANDS_OK) await cp('CP-11d v0.2.8 replay: click_text no_visible_text x3 then
   assert.deepEqual(now.map((x) => x.ok), [true, true, true, true, true], JSON.stringify(now.map((x) => text(x.result).slice(0, 100))));
   for (const x of now.slice(0, 3)) assert.match(x.result, /\(read off the screen\)/);
   assert.ok(!now.some((x) => [LOOP_MESSAGE, STUCK_MESSAGE].includes(text(x.result))), 'never stuck');
-  assert.deepEqual(actsNow().filter((x) => x.steps[0].do === 'click_at').map((x) => x.steps.at(-1).text), [' Eric Tech', ' Eric Tech', ' Eric Tech', ' Eric Tech'], 'every plan typed its answer');
+  assert.deepEqual(actsNow().filter((x) => x.steps[0].do === 'click_at').map((x) => x.steps.at(-1).text), [' Alex Reed', ' Alex Reed', ' Alex Reed', ' Alex Reed'], 'every plan typed its answer');
   // Even when the screen can't be read either (no OCR, as in v0.2.8): the 3 failures stop click_text, not click_at.
   fs.writeFileSync(canvasFile + '.noocr', ''); fs.writeFileSync(handsLog, '');
   const blind = await freshTools({ goals: true })([...tries, ['take_screenshot', { target: 'browser' }], pixels, tries[0]]);
@@ -318,7 +318,7 @@ if (HANDS_OK) await cp('CP-11e v0.2.9 replay: a click_at on a used-up screenshot
   assert.deepEqual(g.map((x) => x.ok), [false, false, true, true], JSON.stringify(g.map((x) => text(x.result).slice(0, 80))));
   // The Classic run (02:43:07-02:43:25): a plan typing into the Doc failed once for real (the helper's type check),
   // the next click_at hit the used-up screenshot, and the click_at after a fresh screenshot was refused as stuck.
-  const plan = { target: 'browser', steps: [{ do: 'click_at', x: 455, y: 285 }, { do: 'key', key: 'cmd+right' }, { do: 'type', text: ' Eric Tech' }] };
+  const plan = { target: 'browser', steps: [{ do: 'click_at', x: 455, y: 285 }, { do: 'key', key: 'cmd+right' }, { do: 'type', text: ' Alex Reed' }] };
   const play2 = freshTools({ goals: true });
   await play2([['take_screenshot', { target: 'browser' }]]);
   fs.writeFileSync(canvasFile + '.actfail', 'Step 3: typed, but the text field still shows "\u200b\u200b", so I stopped before the next step.');

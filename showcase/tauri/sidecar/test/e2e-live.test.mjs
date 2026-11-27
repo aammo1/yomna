@@ -66,7 +66,7 @@ fs.mkdirSync(path.join(brainDir, '_context'), { recursive: true });
 fs.writeFileSync(path.join(brainDir, '_context', 'goals.md'), '# Goals\nShip Jarvis v0.2.6 by Friday.\n');
 fs.writeFileSync(path.join(brainDir, '_raw', 'call.txt'), 'raw evidence');
 fs.writeFileSync(path.join(brainDir, '_context', 'index.md'), '# Index\n- [[youtube]]: _context/youtube.md, the channel\n');
-fs.writeFileSync(path.join(brainDir, '_context', 'youtube.md'), '# YouTube\nOwner: Eric Tech\nChannel: https://www.youtube.com/@EricTech\n');
+fs.writeFileSync(path.join(brainDir, '_context', 'youtube.md'), '# YouTube\nOwner: Alex Reed\nChannel: https://www.youtube.com/@AlexReed\n');
 
 const overlay = [], callUi = [], sends = [], outcomes = [], events = [], lists = [];
 const noop = async () => {};
@@ -314,7 +314,7 @@ if (HANDS) {
       assert.match(r.output, /Name:/, 'the window after the step comes back to check');
     }
     const typed = acts().map((x) => x.steps.find((st) => st.do === 'type')?.text);
-    assert.deepEqual(typed, [' Eric Tech', ' https://www.youtube.com/@EricTech'], 'each value typed into its line');
+    assert.deepEqual(typed, [' Alex Reed', ' https://www.youtube.com/@AlexReed'], 'each value typed into its line');
     assert.deepEqual(acts().map((x) => x.steps[0].text), ['Name:', 'Channel URL:']);
     fs.rmSync(textsFile);
   });
@@ -361,7 +361,7 @@ if (HANDS) {
   const DOC = ['1. What is my name?', '-', '2. What is my YouTube Channel Name?', '-', "3. What's today's date?", '-'];
   await cp('CP-11c permissions: with Allow File Edits off the brain is still read, act_in_app is refused with the Allow message; on, it types', async () => {
     fs.writeFileSync(callLog, ''); fs.writeFileSync(textsFile, JSON.stringify(DOC));
-    const fill = { target: 'front', steps: [{ do: 'click_text', text: 'What is my name?' }, { do: 'key', key: 'down' }, { do: 'type', text: ' Eric Tech' }] };
+    const fill = { target: 'front', steps: [{ do: 'click_text', text: 'What is my name?' }, { do: 'key', key: 'down' }, { do: 'type', text: ' Alex Reed' }] };
     actionsOn = false;
     try {
       const idx = await call('read_file', { path: '_context/index.md' });
@@ -370,8 +370,8 @@ if (HANDS) {
       const rw = await call('read_window', { target: 'front' });
       for (const r of [idx, note, found, rw]) assert.equal(r.error, undefined, r.error);
       assert.match(idx.output, /_context\/youtube\.md/);
-      assert.match(note.output, /Owner: Eric Tech/, 'the brain is read with actions off');
-      assert.match(found.output, /youtube\.md:2:Owner: Eric Tech/, 'and searched');
+      assert.match(note.output, /Owner: Alex Reed/, 'the brain is read with actions off');
+      assert.match(found.output, /youtube\.md:2:Owner: Alex Reed/, 'and searched');
       assert.match(rw.output, /What is my name\?/);
       const off = await call('act_in_app', fill);
       assert.match(off.error ?? '', /turn on "Allow File Edits & Commands"/, 'typing is what the switch stops, and the model is told which switch');
@@ -379,7 +379,7 @@ if (HANDS) {
     } finally { actionsOn = true; }
     const on = await call('act_in_app', fill);
     assert.equal(on.error, undefined, on.error);
-    assert.deepEqual(acts().map((x) => x.steps.at(-1).text), [' Eric Tech'], 'with it on, it types');
+    assert.deepEqual(acts().map((x) => x.steps.at(-1).text), [' Alex Reed'], 'with it on, it types');
     fs.rmSync(textsFile);
   });
 

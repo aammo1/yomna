@@ -80,4 +80,4 @@ graph TD
 - [x] [task-11-panel-and-onboarding-harness-ui](./tasks/task-11-panel-and-onboarding-harness-ui.md) — Rebuild Settings Panel & Onboarding Wizard for CLI harness auto-detect, keyless TTS, cross-platform Gemini Live, and clean changelog
 
 ### Wave 4
-- [ ] [task-12-build-wiring-and-omarchy-packaging](./tasks/task-12-build-wiring-and-omarchy-packaging.md) — Wire `hands-linux` into Tauri build, sync IPC contracts, add Omarchy/Hyprland setup guide, and verify zero branding leaks
+- [x] [task-12-build-wiring-and-omarchy-packaging](./tasks/task-12-build-wiring-and-omarchy-packaging.md) — Wire `hands-linux` into Tauri build, sync IPC contracts, add Omarchy/Hyprland setup guide, and verify zero branding leaks

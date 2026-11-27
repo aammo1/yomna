@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { accountNames, brainName } from '../secondbrain.mjs';
 
 const cases = [
-  [{ full: 'EricTech', user: 'erictech' }, 'EricTech OS', "Eric's Mac: id -F reads EricTech"],
+  [{ full: 'AlexReed', user: 'alexreed' }, 'AlexReed OS', "Alex's Mac: id -F reads AlexReed"],
   [{ full: 'Sam Lee', user: 'sam' }, 'Sam OS', 'the first word of the full name'],
   [{ full: '  Ana  María López ', user: 'ana' }, 'Ana OS', 'spaces around it are ignored'],
   [{ full: '', user: 'sam' }, 'sam OS', 'no full name: the username'],
@@ -22,7 +22,7 @@ for (const [who, want, why] of cases) assert.equal(brainName(who), want, why);
 // Where the full name comes from: id -F on macOS, the passwd GECOS field on Linux, USERNAME on Windows.
 const run = (out) => (cmd, args) => { run.calls.push([cmd, ...args].join(' ')); return out[cmd] ?? null; };
 run.calls = [];
-assert.deepEqual(accountNames({ platform: 'darwin', user: 'erictech', env: {}, run: run({ id: 'EricTech\n' }) }), { full: 'EricTech', user: 'erictech' });
+assert.deepEqual(accountNames({ platform: 'darwin', user: 'alexreed', env: {}, run: run({ id: 'AlexReed\n' }) }), { full: 'AlexReed', user: 'alexreed' });
 assert.ok(run.calls.includes('id -F'), 'macOS asks id -F');
 assert.deepEqual(accountNames({ platform: 'linux', user: 'sam', env: {}, run: run({ getent: 'sam:x:1000:1000:Sam Lee,,,:/home/sam:/bin/bash\n' }) }), { full: 'Sam Lee', user: 'sam' }, 'Linux: the GECOS name, before its first comma');
 assert.ok(run.calls.includes('getent passwd sam'), 'Linux asks getent passwd');

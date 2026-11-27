@@ -53,7 +53,7 @@ async function saved(s, pred, what) {
   for (let i = 0; i < 200; i++) { try { if (pred(s.config())) return s.config(); } catch {} await settle(50); }
   assert.fail(`${what}: ${JSON.stringify((() => { try { return s.config(); } catch { return null; } })())}`);
 }
-// The default folder's name comes from this account (brainname.test.mjs has the cases): "EricTech OS" on Eric's Mac.
+// The default folder's name comes from this account (brainname.test.mjs has the cases): "AlexReed OS" on Alex's Mac.
 const NAME = brainName(accountNames({ user: os.userInfo().username }));
 const tmp = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-brainsetup-')));
 const homes = [];

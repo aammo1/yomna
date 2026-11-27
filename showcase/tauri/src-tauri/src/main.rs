@@ -1092,7 +1092,7 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         // screen, as one of exactly its size is taken for a fullscreen app (GNOME then hides its top bar; Windows
         // draws a strip by an auto-hidden taskbar, #58).
         #[cfg(target_os = "linux")]
-        let init = format!("{init}window.YOMNA_LINUX={0:?};window.JARVIS_LINUX={0:?};", linux::session().name());
+        let init = format!("{init}window.YOMNA_LINUX={:?};", linux::session().name());
         #[cfg(not(target_os = "macos"))]
         let size = tauri::LogicalSize::new(size.width, size.height - 1.0);
         let label = format!("overlay-{gen}-{i}");
@@ -1901,7 +1901,6 @@ fn main() {
             if let Err(e) = set_hotkey(0, "Control+Alt+KeyS") {
                 eprintln!("could not register the show/hide shortcut: {e}");
             }
-            #[cfg(not(target_os = "linux"))]
             if let Err(e) = set_hotkey(1, "Control+Alt+KeyA") {
                 eprintln!("could not register the area shortcut: {e}");
             }

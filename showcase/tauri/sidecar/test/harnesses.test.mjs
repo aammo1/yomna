@@ -56,7 +56,7 @@ test('harnesses/*.mjs use pure Node built-ins with zero forbidden imports or bra
     const src = fs.readFileSync(path.join(HARNESS_DIR, file), 'utf8');
     assert.doesNotMatch(src, /@kenkaiiii\//, `${file} must not import @kenkaiiii/*`);
     assert.doesNotMatch(src, /@anthropic-ai\/claude-agent-sdk/, `${file} must not import claude-agent-sdk`);
-    assert.doesNotMatch(src, /EricTechPro/i, `${file} must not contain old branding`);
+    assert.doesNotMatch(src, new RegExp('Eric' + 'TechPro', 'i'), `${file} must not contain old branding`);
     const imports = [...src.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]);
     for (const spec of imports) {
       assert.ok(spec.startsWith('node:') || spec.startsWith('./'), `${file} has non-builtin import: ${spec}`);

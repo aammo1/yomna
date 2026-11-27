@@ -40,36 +40,36 @@ const setup = (tools = []) => {
 };
 
 { // A call where he says who he is: the hang-up hands the call's words to the memory pass, and its facts are saved.
-  const tools = [{ name: 'read_file', description: 'Read.', parameters: z.object({ path: z.string() }), execute: async () => 'Channel: youtube.com/@EricTech' }];
+  const tools = [{ name: 'read_file', description: 'Read.', parameters: z.object({ path: z.string() }), execute: async () => 'Channel: youtube.com/@AlexReed' }];
   const { calls, call, ended } = setup(tools);
   await call.toggle();
   await until(() => calls.length === 1);
   const s = calls[0];
-  s.server({ serverContent: { inputTranscription: { text: "I'm Eric, I run" } } });
+  s.server({ serverContent: { inputTranscription: { text: "I'm Alex, I run" } } });
   s.server({ serverContent: { inputTranscription: { text: ' a YouTube channel about AI.' } } });
   s.server({ toolCall: { functionCalls: [{ id: 'r1', name: 'read_file', args: { path: '_context/index.md' } }] } });
   await new Promise((r) => setTimeout(r, 20)); // the tool answers
-  s.server({ serverContent: { outputTranscription: { text: 'Nice to meet you, Eric.' } } });
+  s.server({ serverContent: { outputTranscription: { text: 'Nice to meet you, Alex.' } } });
   s.server({ serverContent: { turnComplete: true } });
   s.server({ serverContent: { inputTranscription: { text: 'Fill in my name' } } }); // still talking when he hangs up
   call.hangUp('esc');
   assert.equal(ended.length, 1, 'the hang-up hands the call over once');
   assert.equal(ended[0].why, 'esc');
   const m = ended[0].messages;
-  assert.deepEqual(m.filter((x) => x.role === 'user').map((x) => x.content), ["I'm Eric, I run a YouTube channel about AI.", 'Fill in my name'], 'his words, a half-said turn included');
+  assert.deepEqual(m.filter((x) => x.role === 'user').map((x) => x.content), ["I'm Alex, I run a YouTube channel about AI.", 'Fill in my name'], 'his words, a half-said turn included');
   assert.ok(m.some((x) => x.role === 'assistant' && x.content.some((p) => p.type === 'tool_call' && p.name === 'read_file')), 'the tool she used');
-  assert.ok(m.some((x) => x.role === 'tool' && /youtube\.com\/@EricTech/.test(x.content[0].content)), 'and what it returned');
-  assert.ok(m.some((x) => x.role === 'assistant' && x.content.some((p) => p.text === 'Nice to meet you, Eric.')), 'her words');
+  assert.ok(m.some((x) => x.role === 'tool' && /youtube\.com\/@AlexReed/.test(x.content[0].content)), 'and what it returned');
+  assert.ok(m.some((x) => x.role === 'assistant' && x.content.some((p) => p.text === 'Nice to meet you, Alex.')), 'her words');
   assert.ok(m.findIndex((x) => x.role === 'user') < m.findIndex((x) => x.role === 'assistant'), 'his turn comes before the tool it led to');
 
   // The same memory pass Classic runs: the call's transcript goes to the side model, and the facts it picks are saved.
   let sent = null;
-  const out = await memoryFacts({ messages: m, name: 'Eric', facts: S.listFacts(), ask: async (o) => { sent = o; return { text: '{"facts":[{"text":"Eric runs a YouTube channel about AI at youtube.com/@EricTech."}]}', model: 'fake' }; } });
-  assert.match(sent.system, /pick out what to remember about Eric/);
-  assert.match(sent.text, /Eric: I'm Eric, I run a YouTube channel about AI\./);
-  assert.match(sent.text, /\[tool result\] Channel: youtube\.com\/@EricTech/);
+  const out = await memoryFacts({ messages: m, name: 'Alex', facts: S.listFacts(), ask: async (o) => { sent = o; return { text: '{"facts":[{"text":"Alex runs a YouTube channel about AI at youtube.com/@AlexReed."}]}', model: 'fake' }; } });
+  assert.match(sent.system, /pick out what to remember about Alex/);
+  assert.match(sent.text, /Alex: I'm Alex, I run a YouTube channel about AI\./);
+  assert.match(sent.text, /\[tool result\] Channel: youtube\.com\/@AlexReed/);
   for (const f of out.facts) await S.addFact(f.text);
-  assert.deepEqual(S.listFacts().map((f) => f.text), ['Eric runs a YouTube channel about AI at youtube.com/@EricTech.']);
+  assert.deepEqual(S.listFacts().map((f) => f.text), ['Alex runs a YouTube channel about AI at youtube.com/@AlexReed.']);
 }
 
 { // A call where he said nothing (opened and hung up, or only she spoke): nothing to learn, no memory pass.

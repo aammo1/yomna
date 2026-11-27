@@ -2,6 +2,7 @@
   "bundle": {
     "externalBin": [
       "binaries/yomna-voice",
+      "binaries/yomna-hands",
       "binaries/yomna-node"
     ],
     "linux": {
