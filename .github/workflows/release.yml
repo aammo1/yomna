@@ -307,7 +307,7 @@ jobs:
           [ ${#files[@]} -gt 0 ] || { echo "No installers were built"; exit 1; }
           printf 'Staged %s\n' "${files[@]}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: yomna-${{ matrix.target }}
           path: showcase/tauri/release-assets/Yomna-*
@@ -319,7 +319,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: yomna-*
           merge-multiple: true
