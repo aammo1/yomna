@@ -57,7 +57,7 @@ const names = execFileSync(process.execPath, ['--input-type=module', '-e', `
   const { createTools } = await import(${JSON.stringify(tools)});
   const noop = async () => {};
   const { tools } = createTools({ allowActions: () => false, ui: () => {}, ask: noop, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'T' });
-  console.log(tools.map((t) => t.name).join(','));`], { env: { ...process.env, JARVIS_HANDS: 'fake-hands.mjs' }, encoding: 'utf8' }).trim().split(',');
+  console.log(tools.map((t) => t.name).join(','));`], { env: { ...process.env, YOMNA_HANDS: 'fake-hands.mjs' }, encoding: 'utf8' }).trim().split(',');
 for (const n of ['list_windows', 'read_window', 'act_in_app']) assert.ok(names.includes(n), `${n} is offered with the helper`);
 // The microphone: each reason the voice helper gives gets its own advice, not "I can't find a microphone".
 assert.match(micTrouble('darwin'), /^I can't find a microphone\. Plug one in and try again\.$/, 'the Mac helper sends no reason');

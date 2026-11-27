@@ -4,7 +4,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { parseHTML } from 'linkedom';
+let parseHTML;
+try { ({ parseHTML } = await import('linkedom')); } catch { console.log('skipped (linkedom not installed)'); process.exit(0); }
 
 const ROOT = new URL('../../../onboarding/', import.meta.url);
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));

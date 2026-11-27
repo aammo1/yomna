@@ -420,7 +420,7 @@ assert.match(agentSystem('maker', { dir: '/x', returns: 'answer' }), /report is 
   const again = mk();
   await again.loaded;
   assert.equal(again.get(live.id).state, 'stopped');
-  assert.equal(again.get(live.id).reason, 'Jarvis closed');
+  assert.equal(again.get(live.id).reason, 'Yomna closed');
   assert.equal(again.get(a.id).title, 'Dog brand landing page', 'earlier agents are known again');
   again.stopAll();
   await tick();

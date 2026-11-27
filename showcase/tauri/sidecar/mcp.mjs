@@ -1,8 +1,8 @@
-// MCP connections: other apps and services Jarvis can use through their MCP servers (a remote address, or a
-// program on this computer). The list is ~/Jarvis/Data/mcp.json in the Claude-compatible { mcpServers } shape; keys
-// and tokens in env or headers live in the secret store (secrets.mjs), never in the file. The client is gg's
-// (@kenkaiiii/ggcoder/mcp), which also screens tool descriptions (McpToolGuard) and handles OAuth sign-in.
-// Every call still goes through safety.mjs (checkMcpServer to add, checkMcpCall to use) in tools.mjs.
+// MCP connections: other apps and services Yomna can use through their MCP servers (a remote address, or a
+// program on this computer). The list is ~/Yomna/Data/mcp.json in the standard { mcpServers } shape; keys
+// and tokens in env or headers live in the secret store (secrets.mjs), never in the file.
+// Every call goes through safety.mjs (checkMcpServer to add, checkMcpCall to use).
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
@@ -11,17 +11,17 @@ import { z } from 'zod';
 import { BLOCK, MCP_NAME, checkMcpServer } from './safety.mjs';
 import { DIR, readJson, writeJson } from './store.mjs';
 
-export const SECRET_MARK = '@jarvis-secret'; // an env or header value kept in the secret store
-// The mark saved before the rename: still read as one, so kept keys keep working.
-export const isSecretMark = (v) => v === SECRET_MARK || v === '@roamies-secret';
+export const SECRET_MARK = '@yomna-secret'; // an env or header value kept in the secret store
+// Previous mark kept for seamless migration of saved secrets.
+export const isSecretMark = (v) => v === SECRET_MARK || v === '@jarvis-secret';
 const PREFIX = (server) => `mcp__${server}__`;
 
-/** Where other apps keep their MCP lists: GG Coder's, and Claude Desktop's. */
+/** Where other apps keep their MCP lists: Claude Desktop's config. */
 export function importPaths({ home = os.homedir(), platform = process.platform, env = process.env } = {}) {
   const claude = platform === 'darwin' ? path.join(home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json')
     : platform === 'win32' ? path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Claude', 'claude_desktop_config.json')
       : path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'Claude', 'claude_desktop_config.json');
-  return { gg: path.join(home, '.gg', 'mcp.json'), 'claude-desktop': claude };
+  return { 'claude-desktop': claude };
 }
 
 /** A stored entry → gg's server config (secrets not filled in yet). */
@@ -170,7 +170,7 @@ export function createMcp({ file = path.join(DIR, 'mcp.json'), secrets, manager 
     return t;
   }
 
-  /** Servers in GG Coder's or Claude Desktop's list: { from: [{ name, where }] } for the files that exist. */
+  /** Servers in Claude Desktop's list: { from: [{ name, where }] } for the files that exist. */
   function importable() {
     const out = {};
     for (const [from, p] of Object.entries(paths)) {
@@ -183,10 +183,192 @@ export function createMcp({ file = path.join(DIR, 'mcp.json'), secrets, manager 
   return { ready, probe, add, remove, setEnabled, login, status, liveText, tools, tool, importable, has: (name) => !!read().mcpServers[name], dispose: async () => { await mgr?.dispose?.().catch(() => {}); } };
 }
 
-// gg's client, loaded only when a connection is first needed.
+// Pure Node.js JSON-RPC 2.0 MCP client (HTTP Streamable & stdio), replacing external client dependencies.
+function createLocalMcpClientManager() {
+  const sessions = new Map(); // name -> { close, call }
+  let reqSeq = 0;
+
+  async function openHttp(cfg) {
+    let sessionId = null;
+    const rpc = async (method, params, signal, isNotif = false) => {
+      const id = isNotif ? undefined : ++reqSeq;
+      const body = isNotif ? { jsonrpc: '2.0', method, ...(params !== undefined ? { params } : {}) } : { jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) };
+      const headers = {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        ...(cfg.headers ?? {}),
+        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+      };
+      const res = await fetch(cfg.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+      });
+      const sid = res.headers.get('mcp-session-id');
+      if (sid) sessionId = sid;
+      if (res.status === 401 || res.status === 403) {
+        const err = new Error('Authentication required');
+        err.requiresAuth = true;
+        throw err;
+      }
+      if (isNotif) return null;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      if (!text.trim()) return null;
+      const ct = res.headers.get('content-type') || '';
+      let msg;
+      if (ct.includes('text/event-stream')) {
+        const dataLines = text.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).filter(Boolean);
+        msg = JSON.parse(dataLines.at(-1) || '{}');
+      } else {
+        msg = JSON.parse(text);
+      }
+      const item = Array.isArray(msg) ? msg.find((m) => m.id === id) ?? msg[0] : msg;
+      if (item?.error) throw new Error(item.error.message || 'MCP error');
+      return item?.result ?? null;
+    };
+    await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'yomna', version: '1.0.0' } });
+    await rpc('notifications/initialized', undefined, undefined, true).catch(() => {});
+    const listed = await rpc('tools/list', {});
+    const rawTools = Array.isArray(listed?.tools) ? listed.tools : [];
+    const tools = rawTools.map((t) => ({
+      name: `${PREFIX(cfg.name)}${t.name}`,
+      description: t.description ?? '',
+      rawInputSchema: t.inputSchema ?? null,
+      annotations: t.annotations ?? null,
+      execute: (args, ctx) => rpc('tools/call', { name: t.name, arguments: args ?? {} }, ctx?.signal),
+    }));
+    return { tools, close: async () => {} };
+  }
+
+  async function openStdio(cfg) {
+    const child = spawn(cfg.command, cfg.args ?? [], {
+      env: { ...process.env, ...(cfg.env ?? {}) },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    child.stdin.on('error', () => {});
+    const inflight = new Map();
+    let buf = '';
+    let closed = false;
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      buf += chunk;
+      for (let idx; (idx = buf.indexOf('\n')) >= 0; ) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.id != null && inflight.has(msg.id)) {
+            const p = inflight.get(msg.id);
+            inflight.delete(msg.id);
+            if (msg.error) p.reject(new Error(msg.error.message || 'MCP error'));
+            else p.resolve(msg.result);
+          }
+        } catch {}
+      }
+    });
+    const failAll = (err) => {
+      if (closed) return;
+      closed = true;
+      for (const p of inflight.values()) p.reject(err);
+      inflight.clear();
+    };
+    child.on('error', failAll);
+    child.on('close', (code) => failAll(new Error(`MCP process exited (${code ?? 'closed'})`)));
+    const rpc = (method, params, signal, isNotif = false) => {
+      if (closed) return Promise.reject(new Error('MCP server closed'));
+      if (isNotif) {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, ...(params !== undefined ? { params } : {}) })}\n`);
+        return Promise.resolve(null);
+      }
+      const id = ++reqSeq;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { inflight.delete(id); reject(new Error(`MCP ${method} timed out`)); }, 30_000);
+        const onAbort = () => { clearTimeout(timer); inflight.delete(id); reject(new Error('Aborted')); };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        inflight.set(id, {
+          resolve: (v) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve(v); },
+          reject: (e) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); reject(e); },
+        });
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) })}\n`);
+      });
+    };
+    try {
+      await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'yomna', version: '1.0.0' } });
+      await rpc('notifications/initialized', undefined, undefined, true);
+      const listed = await rpc('tools/list', {});
+      const rawTools = Array.isArray(listed?.tools) ? listed.tools : [];
+      const tools = rawTools.map((t) => ({
+        name: `${PREFIX(cfg.name)}${t.name}`,
+        description: t.description ?? '',
+        rawInputSchema: t.inputSchema ?? null,
+        annotations: t.annotations ?? null,
+        execute: (args, ctx) => rpc('tools/call', { name: t.name, arguments: args ?? {} }, ctx?.signal),
+      }));
+      return {
+        tools,
+        close: async () => {
+          closed = true;
+          try { child.kill(); } catch {}
+        },
+      };
+    } catch (err) {
+      try { child.kill(); } catch {}
+      throw err;
+    }
+  }
+
+  async function connectOne(cfg) {
+    if (sessions.has(cfg.name)) {
+      await sessions.get(cfg.name).close().catch(() => {});
+      sessions.delete(cfg.name);
+    }
+    try {
+      const sess = cfg.url ? await openHttp(cfg) : await openStdio(cfg);
+      sessions.set(cfg.name, sess);
+      return { name: cfg.name, ok: true, toolCount: sess.tools.length, tools: sess.tools };
+    } catch (err) {
+      return {
+        name: cfg.name,
+        ok: false,
+        toolCount: 0,
+        tools: [],
+        error: err?.message || String(err),
+        requiresAuth: !!err?.requiresAuth,
+      };
+    }
+  }
+
+  return {
+    async connectAllDetailed(cfgs) {
+      return Promise.all(cfgs.map(connectOne));
+    },
+    async probe(cfg) {
+      const res = await connectOne(cfg);
+      await this.disconnect(cfg.name);
+      return { ok: res.ok, toolCount: res.toolCount, error: res.error ?? null, requiresAuth: !!res.requiresAuth };
+    },
+    async disconnect(name) {
+      const sess = sessions.get(name);
+      if (sess) {
+        sessions.delete(name);
+        await sess.close().catch(() => {});
+      }
+    },
+    async login() {
+      return { ok: false, error: 'OAuth browser sign-in is not supported for this server.' };
+    },
+    async dispose() {
+      for (const name of [...sessions.keys()]) await this.disconnect(name);
+    },
+  };
+}
+
 async function defaultManager() {
-  const { MCPClientManager } = await import('@kenkaiiii/ggcoder/mcp');
-  return new MCPClientManager();
+  return createLocalMcpClientManager();
 }
 
 // ---------- the chat's tools ----------
@@ -204,15 +386,15 @@ export function createMcpTools({ mcp, ask, isYes, allowActions = () => true, ski
     if (!String(v ?? '').trim()) throw new Error(`${userName} didn't give the ${label}, so ${server} wasn't added. Ask if they want to try again.`);
     return String(v).trim();
   };
-  const SOURCES = { gg: 'GG Coder', 'claude-desktop': 'Claude Desktop' };
+  const SOURCES = { 'claude-desktop': 'Claude Desktop' };
   return [
     {
       name: 'add_connection',
-      description: `Connect an app or service through its MCP server, when ${userName} asks ("connect my Linear", "hook up Notion"). First find its official server: search the web for "<service> MCP server", prefer the service's own remote https address over a package run on this computer, and use what its docs say. name: a short id (letters, digits, - or _). url: a remote server's address; or command + args for one that runs here (like npx -y @scope/server, uvx, docker). env_keys: names of keys or tokens it needs as environment variables (like NOTION_TOKEN); header_keys: headers it needs (like Authorization, with bearer: true to send "Bearer <key>"). Never ask for a key in your reply or put one in the call: this tool asks ${userName} for each in the chat input, and keeps it safely. It always asks them before connecting, shows the exact command or address, tests the server, and opens a browser sign-in when the server needs one. import_from: "gg" or "claude-desktop" lists the servers saved in GG Coder or Claude Desktop (leave name out); with name, it copies that one.`,
+      description: `Connect an app or service through its MCP server, when ${userName} asks ("connect my Linear", "hook up Notion"). First find its official server: search the web for "<service> MCP server", prefer the service's own remote https address over a package run on this computer, and use what its docs say. name: a short id (letters, digits, - or _). url: a remote server's address; or command + args for one that runs here (like npx -y @scope/server, uvx, docker). env_keys: names of keys or tokens it needs as environment variables (like NOTION_TOKEN); header_keys: headers it needs (like Authorization, with bearer: true to send "Bearer <key>"). Never ask for a key in your reply or put one in the call: this tool asks ${userName} for each in the chat input, and keeps it safely. It always asks them before connecting, shows the exact command or address, tests the server, and opens a browser sign-in when the server needs one. import_from: "claude-desktop" lists the servers saved in Claude Desktop (leave name out); with name, it copies that one.`,
       parameters: z.object({
         name: z.string().max(32).optional(), url: z.string().max(500).optional(), command: z.string().max(200).optional(), args: z.array(z.string().max(500)).max(30).optional(),
         env_keys: z.array(z.string().max(60)).max(8).optional(), header_keys: z.array(z.string().max(60)).max(4).optional(), bearer: z.boolean().optional(),
-        import_from: z.enum(['gg', 'claude-desktop']).optional(),
+        import_from: z.enum(['claude-desktop']).optional(),
       }),
       timeoutMs: 6 * 60_000, executionMode: 'sequential',
       execute: async ({ name, url, command, args = [], env_keys: envKeys = [], header_keys: headerKeys = [], bearer = false, import_from: from }, ctx) => {
@@ -224,7 +406,7 @@ export function createMcpTools({ mcp, ask, isYes, allowActions = () => true, ski
           const s = list.find((x) => x.name === name);
           if (!s) throw new Error(`${SOURCES[from]} has no server called ${name}.`);
           ({ url, command } = s.entry); args = s.entry.args ?? [];
-          // What the other app kept in env or headers is copied into the secret store, never into Jarvis' file.
+          // What the other app kept in env or headers is copied into the secret store, never into Yomna's file.
           for (const [k, v] of Object.entries(s.entry.env ?? {})) secretEnv[k] = String(v);
           for (const [k, v] of Object.entries(s.entry.headers ?? {})) secretHeaders[k] = String(v);
         }

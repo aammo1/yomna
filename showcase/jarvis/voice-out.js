@@ -7,7 +7,7 @@
   // Linux (WebKitGTK, #80): a chunk that comes just after the audio ran out (a stream in bursts, or an audio clock
   // running ahead over Bluetooth) restarts it behind a cushion that doubles each time, so the rest join up. Longer
   // pauses (a tool running) don't count; it eases back after a reply with none late. Elsewhere it stays LEAD.
-  const ADAPT = !!window.JARVIS_LINUX, MAX_LEAD = 1, JITTER = 0.5;
+  const ADAPT = !!(window.YOMNA_LINUX || window.JARVIS_LINUX), MAX_LEAD = 1, JITTER = 0.5;
   let lead = LEAD, late = false;
   let ac = null, out = null, meter = null, buf = null, id = null, endAt = 0, live = [], lv = 0;
   // How fast the voice talks (characters a second), learned from each whole reply: its audio length against how much

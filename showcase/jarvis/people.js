@@ -1,5 +1,5 @@
 // Character looks for the sidekick: Sarah, Adrian, Rita X, Ultren and GlayOS. Each is a hologram
-// in the LED palette that fades out at the bottom like the JARVIS globe's projector, with a face that blinks,
+// in the LED palette that fades out at the bottom like Yomna's orb projector, with a face that blinks,
 // follows the cursor, talks with the real voice level and acts out moods. Hair moves with the body: Sarah's long
 // hair sways, Adrian's quiff bounces, Rita's swept waves swing.
 // 10-dither.js calls in here when the look is one of these, as it does jarvis.js. Pure drawing: it composes a
@@ -13,7 +13,7 @@
 // over is drawn over the face (Rita's glasses): [row, column, levels, mirrored too]. mouths replaces the shared
 // mouths for that size.
 (() => {
-  const R = window.Jarvis;
+  const R = window.Yomna || window.Jarvis;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const LV = { h: 1, H: 2, s: 3, S: 4, z: 2, c: 2, C: 1, k: 3, w: 4, t: 1, T: 2, 0: 0, 1: 1, 2: 2, 3: 3, 4: 4 };
   const SWING = new Set(['t', 'T']);
@@ -153,31 +153,6 @@
         rows: ['....Hh', '...zzz', '..zsSS', '..zs11', '..zs10', '..zs10', '..zs11', '..zsss', '...zzz'],
       },
     },
-    // Ken Kai, who made Roamies (not a look; no page shows him since the About page went): a textured dark fringe over faded sides,
-    // and a hoodie with its drawstrings.
-    ken: {
-      L: {
-        w: 29, cy: 14, fade: 5, eye: [2, 12], mouth: 18,
-        patch: [[0, 10, 'hh.h'], [0, 16, 'h.hh'], [1, 9, 'hhhHhhh'], [7, 15, 'shh'], [8, 16, 'h']],
-        rows: [
-          '...............', '.........hhhhhh', '.......hhhhhhhh', '......hhhhHHhhh', '.....hhhhhhhhhh', '.....Hhhhhhhhhh',
-          '.....HHhhhhhhhh', '.....HHhshhshhh', '.....HHssshssss', '.....Hsssssssss', '.....zsssssssss', '....zzsssssssss',
-          '....zzsssssssss', '....zzsssssssss', '.....zsssssssss', '......sssssssss', '......sssssssss', '.......ssssssss',
-          '.......ssssssss', '........sssssss', '..........sssss', '............sss', '............zss', '............zss',
-          '........cccccCz', '.....CCCCCcccCc', '...CCCCCCCCCwCC', '..CCCCCCCCCCwCC', '.CCCCCCCCCCCwCC', 'CCCCCCCCCCCCkCC',
-        ],
-      },
-      S: {
-        w: 17, cy: 8, fade: 3, eye: [2, 8], mouth: 11,
-        patch: [[0, 5, 'h.h'], [0, 10, 'h'], [4, 9, 'sh']],
-        rows: ['.........', '....hhhhh', '...hhhHhh', '..Hhhhhhh', '..Hhhshhs', '..Hssssss', '..sssssss', '.zsssssss', '.zsssssss', '..sssssss', '..sssssss', '...ssssss', '....sssss', '......sss', '.......zs', '...CCcccz', 'CCCCCCCwC'],
-      },
-      X: {
-        w: 11, cy: 4, fade: 1, eye: [1, 3], mouth: 5,
-        patch: [[0, 3, 'h.hh']],
-        rows: ['......', '.hhhhh', '.Hhshh', '.sssss', 'zsssss', '.sssss', '..ssss', '...zss', '..CCwC'],
-      },
-    },
   };
   // Mirror the half rows once. w is the whole width (odd, so there's a centre column).
   for (const who in ART) for (const sz in ART[who]) {
@@ -211,11 +186,6 @@
       L: { open: ['44', '44', '44'], wide: ['43', '44', '44', '44', '43'], shut: ['..', '..', '33'], happy: ['..', '3.', '.3'], dizzy: ['3.', '.3', '3.'], sleepy: ['..', '..', '22'], angry: ['..', '44', '..'], sad: ['..', '..', '33', '22'] },
       S: { open: ['3', '4', '3'], wide: ['4', '4', '4', '4'], shut: ['.', '3'], happy: ['.', '4'], dizzy: ['3', '4'], sleepy: ['.', '.', '2'], angry: ['.', '4'], sad: ['.', '.', '3'] },
       X: { open: ['4'], wide: ['4'], shut: ['2'], happy: ['4'], dizzy: ['4'], sleepy: ['2'], angry: ['4'], sad: ['2'] },
-    },
-    ken: {
-      L: { open: ['000', '040'], wide: ['000', '040', '000'], shut: ['...', '000'], happy: ['.0.', '0.0'], dizzy: ['0.0', '.0.', '0.0'], sleepy: ['...', '000'] },
-      S: { open: ['0', '0'], wide: ['0', '0', '0'], shut: ['.', '0'], happy: ['0'], dizzy: ['0'], sleepy: ['.', '0'] },
-      X: { open: ['0', '0'], wide: ['0', '0'], shut: ['.', '0'], happy: ['0'], dizzy: ['0'], sleepy: ['.', '0'] },
     },
     adrian: {
       L: { open: ['000', '040'], wide: ['000', '040', '000'], shut: ['...', '000'], happy: ['.0.', '0.0'], dizzy: ['0.0', '.0.', '0.0'], sleepy: ['...', '000'] },
@@ -319,13 +289,13 @@
       stamp(G, E, x - ex + lx, ey, true);
       // Brows (where no hair covers them), from the agent's pose or the act.
       const brow = st.brow;
-      if (size !== 'X' && !a.oneEye && (brow || who === 'adrian' || who === 'ken')) {
+      if (size !== 'X' && !a.oneEye && (brow || who === 'adrian')) {
         const by = ey - (size === 'L' ? 2 : 1) - (brow === 'raised' ? 1 : 0), bw = size === 'L' ? 4 : 2;
         for (const s of [1, -1]) for (let i = 0; i < bw; i++) {
           const bx = x + s * (ex + i) + lx;
           const yy = by + ((brow === 'angry' || brow === 'determined') && i === 0 ? 1 : brow === 'sad' && i === bw - 1 ? 1 : 0);
           if (get(G, bx, yy) < 2) continue;
-          set(G, bx, yy, who === 'adrian' || who === 'ken' ? 1 : 2 - (brow ? 1 : 0));
+          set(G, bx, yy, who === 'adrian' ? 1 : 2 - (brow ? 1 : 0));
         }
       }
       // Blush: when happy (Sarah).
@@ -362,5 +332,5 @@
     },
   });
 
-  R.people = { sarah: person('sarah'), adrian: person('adrian'), rita: person('rita'), ultren: person('ultren'), glayos: person('glayos'), ken: person('ken') };
+  R.people = { sarah: person('sarah'), adrian: person('adrian'), rita: person('rita'), ultren: person('ultren'), glayos: person('glayos') };
 })();

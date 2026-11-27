@@ -28,8 +28,8 @@ assert.match(side, /Moods: \$\{VOICE_CUES\.emotions\.filter\(\(e\) => !EMOTES\.i
 assert.match(side, /start your reply with one body tag[^\n]*Most replies need no body tag\./, 'body tags are named as such');
 assert.match(side, /Most replies want a voice cue somewhere/, 'voice cues are named as such');
 // The app's manual is read on demand, not sent with every request.
-assert.match(side, /call about_jarvis and answer from what it says\. Don't invent features or settings it doesn't list\./, 'the prompt sends app questions to about_jarvis');
-assert.match(side, /name: 'about_jarvis',[^]*?execute: async \(\) => aboutJarvis\(/, 'about_jarvis is a tool');
+assert.match(side, /call about_yomna and answer from what it says\. Don't invent features or settings it doesn't list\./, 'the prompt sends app questions to about_yomna');
+assert.match(side, /name: 'about_yomna',[^]*?execute: async \(\) => aboutYomna\(/, 'about_yomna is a tool');
 assert.ok(!side.includes('it saves one .log file in Downloads'), 'the manual is no longer in the system prompt');
 // One home per rule: how act_in_app pages and forms work is in its description, not repeated in the prompt.
 assert.ok(!/Long pages, feeds and lists:/.test(side) && !/a field that opens a calendar is clicked/.test(side), 'act_in_app details live in act_in_app');
@@ -70,7 +70,7 @@ assert.match(drawText, /your reply after draw never repeats or rephrases it \(no
 assert.match(side, /m\.type === 'quiz_done'\) onQuizDone\(/, 'the overlay reports a finished quiz');
 assert.match(side, /const onScreen = \[takeQuizNote\(\), ink\.listNote\(\)\]\.filter\(Boolean\)\.join\(' '\);[^]{0,400}?const stamped = `\[\$\{stampNow\(\)\}\] \$\{text\}\$\{onScreen \? `\\n\(\$\{onScreen\}\)` : ''\}/, 'the score, and lists changed on their cards (#115), ride along with their next message');
 assert.match(side, /const stamped = [^\n]*\$\{onScreen \? `\\n\(\$\{onScreen\}\)` : ''\}\$\{along\}`;/, "untold agent news rides along with their message");
-assert.match(side, /newSession\(config\.provider, config\.model\); liveBlocks\.clear\(\); agent = null; pendingFold = null; lastInput = null; quizDone = null;/, 'a new conversation drops it');
+assert.match(side, /newSession\(harnessManager\.activeId, harnessManager\.activeId\); liveBlocks\.clear\(\); pendingFold = null; lastInput = null; quizDone = null;/, 'a new conversation drops it');
 // Background agents: one short paragraph says when to start one (only when asked, or after offering long hands-off
 // work), that its brief is complete, and that a launch is the whole reply; their state rides in the memory section.
 const agentLine = side.split('\n').find((l) => l.startsWith('Agents: send_agent starts a background agent'));
@@ -79,8 +79,6 @@ assert.match(agentLine, /Use one only when \$\{userName\} asks for an agent or f
 assert.match(agentLine, /Write a complete brief: it sees none of this conversation\./);
 assert.match(agentLine, /once one launches you say nothing more that turn/);
 assert.match(side, /const toAgent = agentish \? `\$\{stamped\}\\n\(They asked for an agent: call send_agent\.\)` : nudge \? `\$\{stamped\}\\n\$\{nudge\}` : stamped;/, 'an explicit request gets the note, and a proactive nudge may follow');
-// A job handed to another model (hybrid models) carries a note with their exact words after it.
-assert.match(side, /const asked = handoff \? `\$\{toAgent\}\\n\$\{handoffNote\(/, 'a handed-off turn carries the handoff note');
 assert.match(side, /what you remember, your agents, scheduled jobs, your skills\) is only sent again when it changes/);
 assert.match(side, /\$\{working \? `\\n\$\{working\}` : ''\}\$\{scheduled \?/, 'the Agents part goes in the memory section');
 assert.ok(!/clicky|Your jobs/i.test(side), 'no borrowed names');
@@ -144,7 +142,7 @@ console.log('prompt (live handoff) tests: passed');
 {
   const at = side.indexOf('\nSpeed: '), ownCode = side.indexOf('\nOn screen or in an app: ');
   assert.ok(ownCode > at && ownCode < side.indexOf('\nSeveral things in one request'), 'right after Speed, where the tools are described');
-  assert.match(side, /\nOn screen or in an app: [^\n]*use the screen tools \(take_screenshot, read_window, open, act_in_app, draw\) directly[^\n]*never read, search or run commands on Jarvis's own code or tool definitions/, 'no reading its own source first');
+  assert.match(side, /\nOn screen or in an app: [^\n]*use the screen tools \(take_screenshot, read_window, open, act_in_app, draw\) directly[^\n]*never read, search or run commands on Yomna's own code or tool definitions/, 'no reading its own source first');
 }
 console.log('prompt (own code) tests: passed');
 

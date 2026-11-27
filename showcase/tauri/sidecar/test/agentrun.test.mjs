@@ -7,11 +7,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-agentrun-')));
+const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'yomna-agentrun-')));
 // The worker's home is the temp folder too, so nothing it does can reach the real one.
 process.env.HOME = process.env.USERPROFILE = tmp;
-process.env.JARVIS_DATA_DIR = path.join(tmp, 'data');
-process.env.JARVIS_FAKE_AGENT = fileURLToPath(new URL('./fakeagent.mjs', import.meta.url));
+process.env.YOMNA_DATA_DIR = path.join(tmp, 'data');
+process.env.YOMNA_FAKE_AGENT = fileURLToPath(new URL('./fakeagent.mjs', import.meta.url));
 process.env.FAKE_LOG = path.join(tmp, 'fake.log');
 const { agentsRoot, createAgents } = await import('../agents.mjs');
 const { checkOpen, checkRead, checkWrite } = await import('../safety.mjs');
@@ -25,7 +25,7 @@ if (a[0] === 'act') o = { ok: true, done: JSON.parse(a[1]).steps.map((s) => s.do
 if (a[0] === 'capture') { fs.writeFileSync(a[1], 'x'); o = { ok: true, file: a[1], window: win, pixels: [800, 600] }; }
 console.log(JSON.stringify(o));
 `);
-process.env.JARVIS_HANDS = handsFake;
+process.env.YOMNA_HANDS = handsFake;
 
 const events = [], handsUi = [];
 let onEnd = null;
@@ -53,7 +53,7 @@ const log = fs.readFileSync(process.env.FAKE_LOG, 'utf8').trim().split('\n').map
 
 assert.equal(end.type, 'done', `${end.agent.reason}\n${JSON.stringify(log, null, 1)}`);
 assert.deepEqual(log.filter((l) => l.isError), [], 'every tool call worked');
-assert.equal(a.dir, path.join(tmp, 'data', 'Jarvis', 'Agents', a.folder), 'its folder is under JARVIS_DATA_DIR');
+assert.equal(a.dir, path.join(tmp, 'data', 'Yomna', 'Agents', a.folder), 'its folder is under YOMNA_DATA_DIR');
 // What the model was given: its brief, only its tools, a prompt about its folder.
 assert.match(log[0].prompt, /Brief from Ken:\nMake a landing page for Woof Co\./);
 assert.deepEqual([...log[0].tools].sort(), ['finish', 'list_files', 'plan', 'read_file', 'run_command', 'search_files', 'web_fetch', 'web_search', 'write_file']);

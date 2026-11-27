@@ -76,7 +76,7 @@ import { createSecrets, retryLoad, runInput } from '../secrets.mjs';
   assert.ok(calls.every((c) => c.cmd === 'secret-tool' && !c.args.join(' ').includes('SECRET')), 'never in argv');
   const store = calls.find((c) => c.args[0] === 'store');
   assert.equal(store.input, 'sk-fish-SECRET', 'on stdin, with no newline added');
-  assert.deepEqual(store.args, ['store', '--label', 'Jarvis: fish-audio', 'service', 'com.erictech.jarvis', 'account', 'fish-audio']);
+  assert.deepEqual(store.args, ['store', '--label', 'Yomna: fish-audio', 'service', 'com.aammo1.yomna', 'account', 'fish-audio']);
   await s.delete('fish-audio');
   assert.equal(await s.get('fish-audio'), null);
   await assert.rejects(s.get('../etc'), /bad secret name/);
@@ -92,11 +92,11 @@ import { createSecrets, retryLoad, runInput } from '../secrets.mjs';
 
 // Anywhere else (no safe store): refuses to save rather than writing plain text.
 {
-  const prev = process.env.JARVIS_DATA_DIR; delete process.env.JARVIS_DATA_DIR;
+  const prev = process.env.YOMNA_DATA_DIR; delete process.env.YOMNA_DATA_DIR;
   const s = createSecrets({ platform: 'freebsd', dataDir: '/tmp' });
   assert.equal(s.kind, 'none');
   await assert.rejects(s.set('fish-audio', 'k'), /no safe place/);
-  if (prev) process.env.JARVIS_DATA_DIR = prev;
+  if (prev) process.env.YOMNA_DATA_DIR = prev;
 }
 
 // runInput: stdin reaches the child; a missing command resolves with an error instead of throwing.

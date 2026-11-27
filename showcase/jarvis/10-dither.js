@@ -47,12 +47,14 @@
       // Size: 'default', 'small' (half the body) or 'cursor' (a pixel arrow pointer). Text keeps its size either way.
       let form = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('form')) || 'default', lastEnv = null;
       let userForm = form;
-      // Look: 'jarvis' (jarvis/jarvis.js: a globe of points with a lit heart, and a HUD reticle at cursor size, the
-      // default) or a character from jarvis/people.js ('sarah', 'adrian', 'rita', 'ultren', 'glayos'). Moves, sizes and
-      // everything else are shared. Any other look (a gone one) is JARVIS; 'classic', the goo blob and its arrow, is
-      // only drawn when a page has no jarvis.js.
-      const drawn = (l) => (l === 'jarvis' ? Jarvis.jarvis : Jarvis.people?.[l]);
-      const pickLook = (l) => (drawn(l) ? l : drawn('jarvis') ? 'jarvis' : 'classic');
+      // Look: 'yomna' (jarvis/jarvis.js: a globe of points with a lit heart, and a HUD reticle at cursor size, the
+      // default, with 'jarvis' accepted as an alias) or a character from jarvis/people.js ('sarah', 'adrian', 'rita',
+      // 'ultren', 'glayos'). Moves, sizes and everything else are shared. Any other look (a gone one) is Yomna;
+      // 'classic', the goo blob and its arrow, is only drawn when a page has no jarvis.js.
+      const isOrb = (l) => l === 'yomna' || l === 'jarvis';
+      const orb = () => Jarvis.yomna || Jarvis.jarvis;
+      const drawn = (l) => (isOrb(l) ? orb() : Jarvis.people?.[l]);
+      const pickLook = (l) => (drawn(l) ? l : orb() ? 'yomna' : 'classic');
       let look = pickLook(typeof location !== 'undefined' ? new URLSearchParams(location.search).get('look') : null);
       const jst = { spin: 0, dt: 0.016 };
       // Each hand springs to its pose in the body's own space (o: its offset from the body), so it moves with the body
@@ -223,7 +225,7 @@
         rows.forEach((r, j) => { for (let i = 0; i < r.length; i++) if (r[i] === '#') for (let a = 0; a < sc; a++) for (let b = 0; b < sc; b++) put(x0 + 2 + i * sc + b, y0 + 2 + j * sc + a, ink); });
       };
       const drawHands = (bx, by) => {
-        if (arms < 0.12 || form === 'cursor' || look === 'jarvis') return;
+        if (arms < 0.12 || form === 'cursor' || isOrb(look)) return;
         // Floating mitts, no arms: they pop out of the body edge and stay readable over it.
         const hr = Math.max(2, Math.round(((R * 0.25) / P) * Math.min(1, arms * 1.25)));
         for (const h of hands) {
@@ -493,7 +495,7 @@
           rest: pose?.rest ?? null, feel: pose?.feel ?? null, // the voice's feeling: the mouth between words, and JARVIS's heart
         });
         // The globe's points overlap (the brightest wins); a character is drawn in layers (the last one wins).
-        if (look !== 'jarvis') {
+        if (!isOrb(look)) {
           const k = { put, L, th };
           if (form === 'cursor') J.cursor(k, Math.round(bx / P), Math.round(by / P), Math.round(bx / P) - AX, Math.round(by / P) - AY, jst);
           else J.body(k, bx / P, by / P, R / P, jst);
@@ -842,7 +844,7 @@
             const sf = env.safe ?? {}, top = Math.ceil(((sf.top ?? 0) + R * 0.9) / P);
             const gx = clamp(Math.round((bx + side * R * 0.95) / P), Math.ceil(((sf.left ?? 0) + R * 0.4) / P), Math.floor((env.w - (sf.right ?? 0) - R * 0.4) / P));
             const gy = Math.max(top, Math.round((by - R * 1.3) / P) - Math.round(Math.abs(Math.sin(act.a * 6))));
-            if (look === 'jarvis') Jarvis.jarvis?.readout({ put, L }, gx, gy, icon, act.a, act.dur, !(P < 6 && form === 'default'));
+            if (isOrb(look)) orb()?.readout({ put, L }, gx, gy, icon, act.a, act.dur, !(P < 6 && form === 'default'));
             else bubble(gx, gy, icon);
           }
           plug?.gridOver?.(env);

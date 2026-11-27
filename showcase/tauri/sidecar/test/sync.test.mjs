@@ -171,11 +171,11 @@ assert.deepEqual(checkFolder('~/Cloud', TMP), { ok: true, dir: path.join(TMP, 'C
   assert.ok(!tooMuchGone(back) && Object.keys(back.out.tombs).length === 0, 'and nothing is deleted anywhere');
 }
 
-// The store says when memory couldn't be read (trusted: false) or came from a newer Jarvis (readOnly).
+// The store says when memory couldn't be read (trusted: false) or came from a newer Yomna (readOnly).
 {
   const fresh = async (name, files = {}) => {
-    process.env.JARVIS_DATA_DIR = path.join(TMP, name);
-    const dir = path.join(TMP, name, 'Jarvis', 'Data');
+    process.env.YOMNA_DATA_DIR = path.join(TMP, name);
+    const dir = path.join(TMP, name, 'Yomna', 'Data');
     fs.mkdirSync(dir, { recursive: true });
     for (const [n, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, n), text);
     return (await import(`../store.mjs?${name}`)).syncSnapshot();
@@ -188,15 +188,15 @@ assert.deepEqual(checkFolder('~/Cloud', TMP), { ok: true, dir: path.join(TMP, 'C
   assert.equal(broken.trusted, false, 'unreadable, backup too');
   assert.equal(broken.commitments.length, 0);
   const newer = await fresh('newer', { 'memory.json': JSON.stringify({ version: 2, commitments: [] }) });
-  assert.ok(newer.readOnly && !newer.trusted, 'memory from a newer Jarvis');
-  delete process.env.JARVIS_DATA_DIR;
+  assert.ok(newer.readOnly && !newer.trusted, 'memory from a newer Yomna');
+  delete process.env.YOMNA_DATA_DIR;
 }
-// A folder set up before the rename (Roamies Sync/, its old check) keeps working, in place, so older copies still sync.
+// A folder set up before the rename (Jarvis Sync/, its old check) keeps working, in place, so older copies still sync.
 {
   const dir = path.join(TMP, 'old-name');
   const salt = Buffer.alloc(16, 7), key = deriveKey('correct horse', salt);
   fs.mkdirSync(path.join(dir, OLD_SUBDIR), { recursive: true });
-  fs.writeFileSync(path.join(dir, OLD_SUBDIR, HEADER), JSON.stringify({ version: 1, kdf: 'scrypt', salt: salt.toString('base64'), check: seal(key, 'roamies-sync', 'check') }));
+  fs.writeFileSync(path.join(dir, OLD_SUBDIR, HEADER), JSON.stringify({ version: 1, kdf: 'scrypt', salt: salt.toString('base64'), check: seal(key, 'jarvis-sync', 'check') }));
   const r = await prepareFolder(dir, 'correct horse');
   assert.ok(r.key && !r.error, 'the old check is accepted');
   assert.ok((await prepareFolder(dir, 'wrong horse!')).error, 'and a wrong passphrase still refused');

@@ -1,7 +1,9 @@
 // Tool schemas every provider accepts. Run: npm test
 import assert from 'node:assert/strict';
-import { resolveToolSchema } from '@kenkaiiii/gg-ai';
+import { z } from 'zod';
 import { createTools, shellFor } from '../tools.mjs';
+
+const resolveToolSchema = (t) => z.toJSONSchema(t.parameters, { unrepresentable: 'any' });
 
 const noop = async () => {};
 const { tools } = createTools({ allowActions: false, ui: () => {}, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'Test', focus: { start: () => 'ok', stop: () => 'ok' }, jobs: { changed: () => {}, run: async () => ({ id: 'a1' }) }, skills: { changed: () => {} } });
@@ -35,7 +37,7 @@ for (const t of tools) walk(t.name, resolveToolSchema(t), '');
 // Live mode declares the same tools to Gemini Live: every one converts, none is left out.
 {
   const { liveDeclarations } = await import('../livebrain.mjs');
-  assert.deepEqual(liveDeclarations(tools)[0].functionDeclarations.map((d) => d.name), tools.map((t) => t.name), 'every tool is a Live declaration');
+  assert.deepEqual(liveDeclarations(tools)[0].functionDeclarations.map((d) => d.name), [...tools.map((t) => t.name), 'delegate_to_harness'], 'every tool is a Live declaration');
 }
 assert.deepEqual(formats, [], 'no tool uses a string format');
 // draw replaced point_at, on every platform (pixels from a screenshot work everywhere).

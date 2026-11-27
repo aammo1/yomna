@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { QUESTIONS, opener, openNote, answerNote, answerTurn, wantsSkip, endsChat, questionIn, splitTurn, plain, stripNote } from '../intro.mjs';
 
 assert.equal(QUESTIONS, 4);
-assert.match(opener('Ken'), /^Hi Ken, I'm JARVIS!.*four quick questions\. What are you working on these days\?$/);
+assert.match(opener('Ken'), /^Hi Ken, I'm Yomna!.*four quick questions\. What are you working on these days\?$/);
 assert.match(opener('Ken', 'Sarah'), /^Hi Ken, I'm Sarah! /, "each look says its own name");
 assert.ok(!/[—–]| - /.test(opener('Ken')), 'no dashes in the opener');
 assert.match(openNote('Ken'), /word for word.*"\[wave\] Hi Ken/s);

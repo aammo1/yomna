@@ -2,64 +2,11 @@
 // the card look (glass.js) over the LED body; talking, thinking and tools drive the pose, face and voice blips.
 // API: agent.say(text) / agent.think(text) return handles with append(), end() and a `closed` promise.
 (() => {
-  const R = window.Jarvis;
+  const R = window.Yomna || window.Jarvis;
   const { clamp, lerp } = R;
 
-  // ---------- dot-matrix glyphs: real font, supersampled, thresholded to two brightness levels ----------
-  const CW = 6, CH = 10, SS = 4;
-  const glyphs = new Map();
-  let gcan = null, gctx = null;
-  const glyph = (ch) => {
-    let g = glyphs.get(ch);
-    if (g) return g;
-    if (!gcan) {
-      gcan = document.createElement('canvas'); gcan.width = CW * SS; gcan.height = CH * SS;
-      gctx = gcan.getContext('2d', { willReadFrequently: true });
-    }
-    gctx.clearRect(0, 0, gcan.width, gcan.height);
-    gctx.fillStyle = '#fff'; gctx.textAlign = 'center'; gctx.textBaseline = 'alphabetic';
-    gctx.font = `700 ${9 * SS}px Menlo, "SF Mono", ui-monospace, monospace`;
-    gctx.fillText(ch, 2.5 * SS, 8 * SS);
-    const px = gctx.getImageData(0, 0, gcan.width, gcan.height).data;
-    const pts = [];
-    for (let y = 0; y < CH; y++) for (let x = 0; x < CW - 1; x++) {
-      let a = 0;
-      for (let j = 0; j < SS; j++) for (let i = 0; i < SS; i++) a += px[((y * SS + j) * gcan.width + x * SS + i) * 4 + 3];
-      a /= SS * SS * 255;
-      if (a > 0.5) pts.push(x, y, 2); else if (a > 0.26) pts.push(x, y, 1);
-    }
-    g = pts; glyphs.set(ch, g);
-    return g;
-  };
-
-  // Emoji: drawn as two cells of coloured LED dots. They take two UTF-16 units (a surrogate pair, or a symbol
-  // plus its emoji selector), which is also two columns in the layout, so wrapping and streaming line up.
+  const CH = 10;
   const EMOJI = /\p{Extended_Pictographic}/u;
-  const emojis = new Map();
-  let ecan = null, ectx = null;
-  // Returns [x, y, r, g, b, ...] dots on a (2*CW-1) x CH grid, or null if this font can't draw it.
-  const emojiGlyph = (cluster) => {
-    if (emojis.has(cluster)) return emojis.get(cluster);
-    const EW = CW * 2 - 1, S = 8;
-    if (!ecan) { ecan = document.createElement('canvas'); ecan.width = EW * S; ecan.height = CH * S; ectx = ecan.getContext('2d', { willReadFrequently: true }); }
-    ectx.clearRect(0, 0, ecan.width, ecan.height);
-    ectx.textAlign = 'center'; ectx.textBaseline = 'middle';
-    ectx.font = `${CH * S * 0.82}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
-    ectx.fillText(cluster, (EW * S) / 2, (CH * S) / 2 + S * 0.3);
-    const px = ectx.getImageData(0, 0, ecan.width, ecan.height).data;
-    const pts = [];
-    for (let y = 0; y < CH; y++) for (let x = 0; x < EW; x++) {
-      let r = 0, g = 0, bl = 0, a = 0;
-      for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) {
-        const o = ((y * S + j) * ecan.width + x * S + i) * 4, al = px[o + 3] / 255;
-        r += px[o] * al; g += px[o + 1] * al; bl += px[o + 2] * al; a += al;
-      }
-      if (a / (S * S) > 0.35) pts.push(x, y, Math.round(r / a), Math.round(g / a), Math.round(bl / a));
-    }
-    const g = pts.length ? pts : null;
-    emojis.set(cluster, g);
-    return g;
-  };
   // At index j of s: the emoji that starts there and how many units it covers, or null.
   const emojiAt = (s, j) => {
     const cp = s.codePointAt(j);
@@ -80,22 +27,115 @@
     return { cluster, n };
   };
 
-  const wrap = (text, cols) => {
+  const RTL_RE = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+  const hasRtl = (s) => RTL_RE.test(String(s ?? ''));
+  const wordSeg = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
+  const graphemeSeg = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+
+  const splitGraphemes = (s) => {
+    if (graphemeSeg) return Array.from(graphemeSeg.segment(s), (x) => x.segment);
+    const out = [];
+    for (let i = 0; i < s.length; ) {
+      const cp = s.codePointAt(i);
+      const n = cp > 0xffff ? 2 : 1;
+      out.push(s.slice(i, i + n));
+      i += n;
+    }
+    return out;
+  };
+
+  // Segment a long unspaced token using word granularity, falling back to graphemes so emoji/Arabic clusters stay whole.
+  const splitLongToken = (token, start, cols) => {
+    const pieces = wordSeg ? Array.from(wordSeg.segment(token), (x) => ({ s: x.segment, i: start + x.index })) : [{ s: token, i: start }];
+    const out = [];
+    let cur = '', curStart = start;
+    for (const p of pieces) {
+      if (cur && cur.length + p.s.length <= cols) { cur += p.s; continue; }
+      if (cur) { out.push({ start: curStart, s: cur }); cur = ''; }
+      if (p.s.length <= cols) { cur = p.s; curStart = p.i; continue; }
+      let gOffset = p.i;
+      for (const g of splitGraphemes(p.s)) {
+        if (cur && cur.length + g.length > cols) {
+          out.push({ start: curStart, s: cur });
+          cur = g; curStart = gOffset;
+        } else {
+          if (!cur) curStart = gOffset;
+          cur += g;
+        }
+        gOffset += g.length;
+      }
+    }
+    if (cur) out.push({ start: curStart, s: cur });
+    return out;
+  };
+
+  const wrapLines = (text, cols) => {
+    const src = String(text ?? '');
     const lines = [];
-    let i = 0;
-    const n = text.length;
-    while (i <= n) {
-      let end = i, lastSpace = -1;
-      while (end < n && text[end] !== '\n' && end - i < cols) { if (text[end] === ' ') lastSpace = end; end++; }
-      if (end < n && text[end] !== '\n' && end - i >= cols && lastSpace > i) end = lastSpace;
-      // Never cut an emoji (a surrogate pair) across two lines.
-      else if (end < n && end > i + 1 && /[\ud800-\udbff]/.test(text[end - 1])) end--;
-      lines.push({ start: i, s: text.slice(i, end) });
-      if (end >= n) break;
-      i = text[end] === ' ' || text[end] === '\n' ? end + 1 : end;
+    let pStart = 0;
+    for (const para of src.split('\n')) {
+      const paraRtl = hasRtl(para);
+      if (!para.length) {
+        lines.push({ start: pStart, s: '', rtl: paraRtl });
+        pStart += 1;
+        continue;
+      }
+      // Group into whitespace runs vs non-whitespace runs via Intl.Segmenter (word granularity) or whitespace fallback.
+      const segs = wordSeg
+        ? Array.from(wordSeg.segment(para), (x) => ({ s: x.segment, i: x.index }))
+        : Array.from(para.matchAll(/\S+|\s+/g), (m) => ({ s: m[0], i: m.index }));
+      const runs = [];
+      for (const seg of segs) {
+        const isSpace = /^\s+$/.test(seg.s);
+        const prev = runs[runs.length - 1];
+        if (prev && prev.isSpace === isSpace) prev.s += seg.s;
+        else runs.push({ s: seg.s, i: seg.i, isSpace });
+      }
+
+      let cur = '', curStart = pStart, pendingSpace = '';
+      for (const run of runs) {
+        if (run.isSpace) {
+          if (!cur && curStart === pStart) {
+            if (run.s.length <= cols) cur = run.s;
+            else curStart = pStart + run.i + run.s.length;
+          } else if (cur) {
+            pendingSpace += run.s;
+          }
+          continue;
+        }
+        const need = cur.length + pendingSpace.length + run.s.length;
+        if (cur && need <= cols) {
+          cur += pendingSpace + run.s;
+          pendingSpace = '';
+        } else {
+          if (cur) {
+            lines.push({ start: curStart, s: cur, rtl: paraRtl || hasRtl(cur) });
+            cur = '';
+          }
+          pendingSpace = '';
+          const absStart = pStart + run.i;
+          if (run.s.length <= cols) {
+            cur = run.s;
+            curStart = absStart;
+          } else {
+            const chunks = splitLongToken(run.s, absStart, cols);
+            for (let k = 0; k < chunks.length - 1; k++) {
+              lines.push({ ...chunks[k], rtl: paraRtl || hasRtl(chunks[k].s) });
+            }
+            const lastChunk = chunks[chunks.length - 1];
+            cur = lastChunk.s;
+            curStart = lastChunk.start;
+          }
+        }
+      }
+      if (cur || lines.length === 0 || lines[lines.length - 1].start < pStart) {
+        lines.push({ start: curStart, s: cur, rtl: paraRtl || hasRtl(cur) });
+      }
+      pStart += para.length + 1;
     }
     return lines;
   };
+  const wrap = wrapLines;
   // The typing caret (an index into the text) as a wrapped line and column, so it's drawn where the next letter goes.
   const caretAt = (lines, caret) => {
     let li = 0;
@@ -465,11 +505,24 @@
     const tipPoint = () => ({ x: m.x + Math.sign((b?.x.x ?? m.x) + (b?.w.x ?? 0) / 2 - m.x) * k.R * 0.25, y: b?.below ? m.y + k.R * 0.95 : m.y - k.R * 1.02 });
 
     // ---- layout targets ----
+    const measureRtlW = (lines, t, bb, maxW) => {
+      let rtlW = 0;
+      const base = bb.kind === 'thought' ? 400 : 500;
+      const baseFont = `${base} ${fontPx(t)}px "Martian Mono", "Jarvis Arabic", "Readex Pro", Menlo, ui-monospace, monospace`;
+      for (const l of lines) {
+        if (!l.rtl && !hasRtl(l.s)) continue;
+        tctx.font = R.rtlFont ? R.rtlFont(l.s, baseFont) : baseFont;
+        const w = Math.ceil(tctx.measureText(l.s.trimEnd()).width) + 4;
+        if (w > rtlW) rtlW = w;
+      }
+      return Math.min(rtlW, maxW);
+    };
     const innerSize = (bb) => {
       const t = T();
       if (bb.kind === 'thought' && !bb.text) return { cols: 4, rows: 1, w: DOTS_W + 6, h: CH * t };
       const maxCols = bb.kind === 'thought' ? THINK_COLS : bb.expanded ? Math.min(72, Math.floor((W - 80) / colW(t))) : MAX_COLS;
       const maxRows = bb.kind === 'thought' ? THINK_LINES : bb.expanded ? Math.max(MAX_LINES, Math.floor((H * 0.62) / (CH * t))) : MAX_LINES;
+      const maxRtlW = Math.max(maxCols * colW(t), W - 80 - padX(bb) * 2);
       if (bb.input) {
         const src = bb.text ? bb.lines : wrap(bb.input.placeholder || ' ', MAX_COLS);
         // A live transcript arrives in jumps, so its bubble is full width from the start and only grows down.
@@ -478,14 +531,21 @@
         const rows = clamp(src.length, 1, MAX_LINES);
         const meter = bb.input.listen ? (METER + 1) * k.P : 0;
         const footW = bb.input.choices ? choicesW(bb) : hintH(bb) ? G.textW(HINT, HINT_F) : 0;
-        return { cols, rows, maxRows: MAX_LINES, w: Math.max(cols * colW(t), footW), h: rows * CH * t + meter + footH(bb) };
+        const rtlW = measureRtlW(src, t, bb, maxRtlW);
+        const w = Math.max(cols * colW(t), rtlW, footW);
+        bb.innerW = w;
+        return { cols, rows, maxRows: MAX_LINES, w, h: rows * CH * t + meter + footH(bb) };
       }
       const shownLines = bb.lines.filter((l) => l.start < Math.max(1, bb.shown) || l === bb.lines[0]);
+      const activeLines = bb.expanded ? bb.lines : shownLines;
       let cols = 4;
-      for (const l of (bb.expanded ? bb.lines : shownLines)) cols = Math.max(cols, Math.min(l.s.length, maxCols));
+      for (const l of activeLines) cols = Math.max(cols, Math.min(l.s.length, maxCols));
       if (bb.lines.length > 1) cols = Math.max(cols, Math.min(maxCols, 18));
-      const rows = clamp(bb.expanded ? bb.lines.length : shownLines.length, 1, maxRows);
-      return { cols, rows, maxRows, w: cols * colW(t) + dotsDx(bb), h: rows * CH * t };
+      const rows = clamp(activeLines.length, 1, maxRows);
+      const rtlW = measureRtlW(activeLines, t, bb, maxRtlW);
+      const w = Math.max(cols * colW(t), rtlW);
+      bb.innerW = w;
+      return { cols, rows, maxRows, w: w + dotsDx(bb), h: rows * CH * t };
     };
 
     const step = (bb, dt, env) => {
@@ -697,7 +757,7 @@
       const fade = bb.closing ? clamp(1 - bb.closing / 0.25, 0, 1) : clamp((bb.age - 0.08) / 0.2, 0, 1);
       if (fade <= 0 || bb.pop.x < 0.6) return;
       const ix = fr.x + padX(bb) + dotsDx(bb), iy = fr.y + padY(bb);
-      const iw = bb.cols * cw, ih = bb.rows * lh;
+      const iw = Math.max(bb.cols * cw, bb.innerW ?? 0), ih = bb.rows * lh;
       const pw = Math.ceil(iw * dpr) + 2, phh = Math.ceil(ih * dpr) + 2;
       if (tcan.width !== pw || tcan.height !== phh) { tcan.width = pw; tcan.height = phh; }
       tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -715,12 +775,12 @@
         let f = fonts.get(st);
         if (!f) {
           const w = st & (md?.BOLD ?? 0) ? 700 : base, it = st & (md?.ITAL ?? 0) ? 'italic ' : '';
-          f = `${it}${w} ${fpx}px "Martian Mono", "Jarvis Arabic", Menlo, ui-monospace, monospace`; fonts.set(st, f);
+          f = `${it}${w} ${fpx}px "Martian Mono", "Jarvis Arabic", "Readex Pro", Menlo, ui-monospace, monospace`; fonts.set(st, f);
         }
         return f;
       };
       let curFont = '';
-      tctx.textBaseline = 'middle'; tctx.textAlign = 'left';
+      tctx.textBaseline = 'middle'; tctx.textAlign = 'left'; tctx.direction = 'ltr';
       const ink = dim ? css(PAL[L - 2], 0.9) : TEXT_INK, accent = dim ? ink : TEXT_ACCENT;
       for (let li = first; li <= last; li++) {
         const line = lines[li], cy = (li - s0 + 0.5) * lh;
@@ -730,13 +790,17 @@
         tctx.globalAlpha = clamp(edge, 0, 1);
         // Arabic and Hebrew: the line is drawn whole, right-aligned, so letters join and run right to left (letter
         // by letter on the grid they came out disjoined and backwards, #69). It drops per-letter styling there.
-        if (R.rtl(line.s)) {
+        const rtl = !!(line.rtl || hasRtl(line.s));
+        if (rtl) {
           const n = Math.min(line.s.length, shown - line.start);
           if (n > 0) {
             const rf = R.rtlFont(line.s, fontFor(0)); // its own narrow space between Arabic words
             if (curFont !== rf) { curFont = rf; tctx.font = rf; }
             tctx.fillStyle = ink; tctx.direction = 'rtl'; tctx.textAlign = 'right';
-            tctx.fillText(line.s.slice(0, n).trimEnd(), iw, cy, iw);
+            const slice = line.s.slice(0, n).trimEnd();
+            const sw = tctx.measureText(slice).width;
+            if (sw > iw) tctx.fillText(slice, iw, cy, iw);
+            else tctx.fillText(slice, iw, cy);
             tctx.direction = 'ltr'; tctx.textAlign = 'left';
           }
           continue;
@@ -768,9 +832,23 @@
         // caret where the next letter goes (or at the start, over the placeholder)
         let li = 0, col = 0;
         if (bb.text) ({ li, col } = caretAt(bb.lines, bb.input.caret ?? bb.text.length));
-        if (col >= bb.cols) col = bb.cols - 1;
+        const curLine = bb.lines[li];
+        const rtlCaret = curLine ? !!(curLine.rtl || hasRtl(curLine.s)) : hasRtl(bb.input.placeholder);
         const cy = (li - s0) * lh;
-        if (cy > -1 && cy < ih) { tctx.fillStyle = css(HOT); tctx.fillRect(col * cw + 0.5, cy + lh * 0.15, Math.max(1.5, t * 0.8), lh * 0.7); }
+        if (cy > -1 && cy < ih) {
+          let cx;
+          if (rtlCaret) {
+            const rf = R.rtlFont(curLine?.s || bb.input.placeholder || '', fontFor(0));
+            if (curFont !== rf) { tctx.font = rf; curFont = rf; }
+            const prefix = curLine ? curLine.s.slice(0, col) : '';
+            cx = clamp(iw - tctx.measureText(prefix).width - 1, 0, Math.max(0, iw - 2));
+          } else {
+            if (col >= bb.cols) col = bb.cols - 1;
+            cx = col * cw + 0.5;
+          }
+          tctx.fillStyle = css(HOT);
+          tctx.fillRect(cx, cy + lh * 0.15, Math.max(1.5, t * 0.8), lh * 0.7);
+        }
       }
       // Clip to the frame as it is this instant: it may still be growing, or shrinking away on close.
       const cx1 = fr.x + fr.w - padX(bb) + 2, cy1 = fr.y + fr.h - padY(bb) - (bb.input?.listen ? (METER + 1) * P : 0) - footH(bb) + 2;

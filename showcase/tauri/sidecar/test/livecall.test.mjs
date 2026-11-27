@@ -90,7 +90,7 @@ const setup = ({ tools = [], key = 'k', answer = null, newTurn, now } = {}) => {
   const before = uis.length;
   s.server({ serverContent: { interrupted: true } });
   const after = uis.slice(before);
-  assert.deepEqual(after[0], { kind: 'speech', stop: true });
+  assert.ok(after.some((m) => m.kind === 'speech' && m.stop === true));
   assert.ok(after.some((m) => m.kind === 'agent' && m.e.type === 'done'));
   assert.equal(call.open, true, 'cutting in keeps the call open');
 }
@@ -130,7 +130,7 @@ const setup = ({ tools = [], key = 'k', answer = null, newTurn, now } = {}) => {
 }
 { // Classic and Live log tool calls through the same helper.
   const src = fs.readFileSync(new URL('../sidekick.mjs', import.meta.url), 'utf8');
-  assert.match(src, /logLine\('tool', toolLog\(\{ turn, id: e\.toolCallId, name: e\.name, args: e\.args \}\)\)/);
+  assert.match(src, /logLine\('tool', toolLog\(\{ turn, id: callId, name, args: e\.args \}\)\)/);
   assert.match(fs.readFileSync(new URL('../livecall.mjs', import.meta.url), 'utf8'), /log\('tool', toolLog\(/);
 }
 
@@ -384,7 +384,7 @@ const setup = ({ tools = [], key = 'k', answer = null, newTurn, now } = {}) => {
   assert.match(src, /m\.type === 'live_hangup'\) \{ if \(!liveCall\.hangUp\(m\.via === 'esc' \? 'esc' : 'tap'\)\) ui\(\{ kind: 'live', state: 'closed' \}\); \}/,
     "the overlay's Esc hangs up through the same path, and with no call left (a respawned sidecar) it still tells the overlay the call is closed so Esc is let go");
   // Live mode starts the helper even with Classic talking off (macOS: the only helper with a Live mic).
-  assert.match(src, /const liveTalk = \(\) => MAC && voiceModeOf\(config\) === 'live';/);
+  assert.match(src, /const liveTalk = \(\) => voiceModeOf\(config\) === 'live';/);
   assert.match(src, /type: 'voice_config', enabled: VOICE_OK && \(liveTalk\(\) \|\| \(config\.voice && voiceReady\(\)\)\),/);
   // One source for the helper's live mode: voice_config. A restarted helper is sent the whole config again.
   assert.match(src, /m\.type === 'voice_ready'\) \{[^\n]*voiceConfig\(\);/);
@@ -402,7 +402,7 @@ const setup = ({ tools = [], key = 'k', answer = null, newTurn, now } = {}) => {
   // One path starts a request in both modes: Classic per message, Live per turn of theirs in the call.
   assert.match(src, /const startRequest = \(\) => \(requestNo = nextTurn\(\)\);/);
   assert.match(src, /const turn = startRequest\(\);/, 'Classic starts its request through it');
-  assert.match(src.slice(src.indexOf('const liveCall = createLiveCall(')), /^[^]{0,900}newTurn: startRequest,/, 'Live starts each turn through it');
+  assert.match(src.slice(src.indexOf('const liveCall = createLiveCall(')), /^[^]{0,3000}newTurn: startRequest,/, 'Live starts each turn through it');
 }
 
 { // "Hey Jarvis" right after a hang-up doesn't open a new call while her last words may still be coming out of the

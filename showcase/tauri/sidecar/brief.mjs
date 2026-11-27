@@ -1,6 +1,6 @@
-// The morning briefing: the first time each day the user talks to Jarvis (talk keys or wake word), the reply starts
-// with what's on today, from Jarvis' own reminders and, if they want, their Todoist (read from its window, the same
-// way Jarvis reads any app). The day turns over at 4 am, so a late night still counts as the day before.
+// The morning briefing: the first time each day the user talks to Yomna (talk keys or wake word), the reply starts
+// with what's on today, from Yomna's own reminders and, if they want, their Todoist (read from its window, the same
+// way Yomna reads any app). The day turns over at 4 am, so a late night still counts as the day before.
 export const DAY_STARTS = 4; // hour
 
 /** The local day `ms` belongs to, as YYYY-MM-DD, turning over at DAY_STARTS. */

@@ -4,12 +4,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-mcp-test-'));
-process.env.HOME = TMP; process.env.USERPROFILE = TMP; delete process.env.JARVIS_DATA_DIR;
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'yomna-mcp-test-'));
+process.env.HOME = TMP; process.env.USERPROFILE = TMP; delete process.env.YOMNA_DATA_DIR;
 process.on('exit', () => fs.rmSync(TMP, { recursive: true, force: true }));
 const { SECRET_MARK, isSecretMark, createMcp, importPaths, toConfig, whereOf } = await import('../mcp.mjs');
-// A key saved before the rename is marked '@roamies-secret': still a kept secret.
-assert.ok(isSecretMark(SECRET_MARK) && isSecretMark('@roamies-secret') && !isSecretMark('tok-123456'));
+// A key saved before the rename is marked '@jarvis-secret': still a kept secret.
+assert.ok(isSecretMark(SECRET_MARK) && isSecretMark('@jarvis-secret') && !isSecretMark('tok-123456'));
 const { DIR, flushWrites } = await import('../store.mjs');
 
 // A fake gg client: "notes" has two tools, "linear" needs sign-in until login, "broken" never connects.

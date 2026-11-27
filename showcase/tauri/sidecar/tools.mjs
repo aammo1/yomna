@@ -5,7 +5,6 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createWebFetchTool, createWebSearchTool, runSideWebSearch, runSideWebSearchViaClaudeCode } from '@kenkaiiii/ggcoder/web';
 import { z } from 'zod';
 import { parseSipsSize, readProblem, rematch, sameBounds, shotFits, shotMap, shotProblem, shotUnits, snapRect, toScreen } from './pointing.mjs';
 import { ASK, BLOCK, checkDrawAction, checkFetch, checkOpen, checkRead, checkWrite, classifyCommand, isRiskyClick, isYes, riskyKind } from './safety.mjs';
@@ -42,8 +41,8 @@ export const run = (cmd, args, { onLine, ...opts } = {}) => new Promise((res) =>
 // failure says "Unable to find application", as macOS's open does.
 // Start-Process only finds programs on PATH or in App Paths; Store apps and per-user installs (Spotify, Roblox, #81)
 // are found by their Start menu name and started through shell:AppsFolder.
-const WIN_OPEN = "try { if ($env:JARVIS_OPEN_APP) { Start-Process -FilePath $env:JARVIS_OPEN_APP -ArgumentList ('\"' + $env:JARVIS_OPEN + '\"') -ErrorAction Stop } else { Start-Process -FilePath $env:JARVIS_OPEN -ErrorAction Stop } } catch { $e = $_; $n = $env:JARVIS_OPEN; $a = $null; if (-not $env:JARVIS_OPEN_APP -and $n -notmatch '[\\\\/:]') { $w = [WildcardPattern]::Escape($n); $all = @(Get-StartApps -ErrorAction SilentlyContinue); $a = $all | Where-Object { $_.Name -eq $n } | Select-Object -First 1; if (-not $a) { $a = $all | Where-Object { $_.Name -like ($w + '*') } | Select-Object -First 1 }; if (-not $a) { $a = $all | Where-Object { $_.Name -like ('*' + $w + '*') } | Select-Object -First 1 } }; if ($a) { Start-Process -FilePath ('shell:AppsFolder\\' + $a.AppID) } else { [Console]::Error.WriteLine('Unable to find application: ' + $e.Exception.Message); exit 1 } }";
-export const winOpen = (target, app = '') => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', WIN_OPEN], { env: { ...process.env, JARVIS_OPEN: target, JARVIS_OPEN_APP: app } });
+const WIN_OPEN = "try { if ($env:YOMNA_OPEN_APP) { Start-Process -FilePath $env:YOMNA_OPEN_APP -ArgumentList ('\"' + $env:YOMNA_OPEN + '\"') -ErrorAction Stop } else { Start-Process -FilePath $env:YOMNA_OPEN -ErrorAction Stop } } catch { $e = $_; $n = $env:YOMNA_OPEN; $a = $null; if (-not $env:YOMNA_OPEN_APP -and $n -notmatch '[\\\\/:]') { $w = [WildcardPattern]::Escape($n); $all = @(Get-StartApps -ErrorAction SilentlyContinue); $a = $all | Where-Object { $_.Name -eq $n } | Select-Object -First 1; if (-not $a) { $a = $all | Where-Object { $_.Name -like ($w + '*') } | Select-Object -First 1 }; if (-not $a) { $a = $all | Where-Object { $_.Name -like ('*' + $w + '*') } | Select-Object -First 1 } }; if ($a) { Start-Process -FilePath ('shell:AppsFolder\\' + $a.AppID) } else { [Console]::Error.WriteLine('Unable to find application: ' + $e.Exception.Message); exit 1 } }";
+export const winOpen = (target, app = '') => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', WIN_OPEN], { env: { ...process.env, YOMNA_OPEN: target, YOMNA_OPEN_APP: app } });
 // run_command's shell. Windows: cmd /d /s /c "…" passed as is (what Node's shell: true does); handed over as a plain
 // argument, Node escaped its quotes as \" which cmd doesn't read, so any command with quotes in it broke.
 export const shellFor = (command, platform = process.platform, env = process.env) => (platform === 'win32'
@@ -137,8 +136,8 @@ async function openLinuxApp(name) {
 const actionsOff = `File edits and commands are switched off. Tell the user to turn on "Allow File Edits & Commands" in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'} menu if they want this.`;
 
 // "hands": the bundled helper that captures one window or area and reads/controls other apps (hands/main.swift on
-// macOS, hands-win on Windows; same commands and JSON). A .mjs one (a test's fake) runs on this Node.
-const HANDS = process.env.JARVIS_HANDS || '';
+// macOS, hands-win on Windows, hands-linux on Linux; same commands and JSON). A .mjs one (a test's fake) runs on this Node.
+const HANDS = process.env.YOMNA_HANDS || '';
 const runHands = (args, opts) => (HANDS.endsWith('.mjs') ? run(process.execPath, [HANDS, ...args], opts) : run(HANDS, args, opts));
 const STALE_ID = 'The page changed since read_window, so that id is out of date. Call read_window again and use the new ids.';
 // An app named in read_window or act_in_app that isn't open: open it (with the open tool's safety check) and wait
@@ -147,7 +146,7 @@ async function launchApp(name, hands) {
   const n = String(name).trim();
   if (!['darwin', 'win32'].includes(process.platform) || !n || /[/\\:]/.test(n) || checkOpen(n, HOME).level === BLOCK) return false;
   // Opened only to act in it: in background mode (the default) it opens behind the user's app, not in front (macOS).
-  const r = process.platform === 'win32' ? await winOpen(n) : await run('open', [...(process.env.JARVIS_BG !== '0' ? ['-g'] : []), '-a', n]);
+  const r = process.platform === 'win32' ? await winOpen(n) : await run('open', [...(process.env.YOMNA_BG !== '0' ? ['-g'] : []), '-a', n]);
   if (r.err && /Unable to find application/i.test(r.stderr)) throw new Error(`There's no app called "${n}" on ${THIS_COMPUTER} (not installed, or it has another name). Don't look for it another way; say so and carry on with the rest.`);
   if (r.err) return false;
   for (let i = 0; i < 30; i++) {
@@ -227,16 +226,109 @@ export const copyText = (text, askShell) => (LINUX ? askShell({ type: 'clipboard
 }));
 
 // askShell: Linux asks the app itself for screenshots and copying ({type:'screenshot'|'clipboard', …} → its answer).
-/** GG Coder's side search for the sign-in in use, so a search's result pages never fill the main model's context: Claude
- *  Code's WebSearch on a Claude sign-in ({ cc, cwd }), Anthropic's server search on an Anthropic key ({ apiKey, baseUrl }),
- *  else null, and web_search uses its keyless engines (DuckDuckGo, Brave, Bing, Google). */
-export function sideSearchFor(route) {
-  if (route?.cc?.executable) return (req) => runSideWebSearchViaClaudeCode(req, { executable: route.cc.executable, env: route.cc.env ?? {}, cwd: route.cwd ?? HOME });
-  if (route?.apiKey) return (req) => runSideWebSearch(req, { apiKey: route.apiKey, ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}) });
+export function sideSearchFor() {
   return null;
 }
 // Every request and redirect hop of web_fetch goes through safety.mjs, by name and by the addresses it resolves to.
 export const guardFetch = async (url) => { const v = await checkFetch(url); return v.level === BLOCK ? `Blocked for safety: ${v.reason}` : null; };
+
+const decodeEntities = (s) => String(s)
+  .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+
+const stripHtml = (html) => decodeEntities(
+  String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<\/(?:p|div|li|tr|h[1-6]|blockquote|section|article|br)\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' '),
+).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').trim();
+
+function decodeDdgUrl(href) {
+  try {
+    const u = new URL(href, 'https://duckduckgo.com');
+    const uddg = u.searchParams.get('uddg');
+    return uddg || u.href;
+  } catch { return href; }
+}
+
+function createLocalWebSearchTool() {
+  return {
+    name: 'web_search',
+    description: 'Search the web for current information. Returns titles, links, and snippets.',
+    parameters: z.object({
+      query: z.string().min(1).max(400),
+      count: z.number().int().min(1).max(10).optional(),
+    }),
+    execute: async ({ query, count = 5 }, ctx) => {
+      const sig = ctx?.signal ? AbortSignal.any([ctx.signal, AbortSignal.timeout(12_000)]) : AbortSignal.timeout(12_000);
+      const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+        headers: { 'user-agent': 'Mozilla/5.0 (compatible; Yomna/1.0)', accept: 'text/html' },
+        signal: sig,
+      });
+      if (!res.ok) throw new Error(`Web search failed (HTTP ${res.status}).`);
+      const html = await res.text();
+      const results = [];
+      const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+      const snipRe = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+      const snips = [...html.matchAll(snipRe)].map((m) => stripHtml(m[1]));
+      for (const m of html.matchAll(linkRe)) {
+        if (results.length >= count) break;
+        const url = decodeDdgUrl(decodeEntities(m[1]));
+        const title = stripHtml(m[2]);
+        const snippet = snips[results.length] ?? '';
+        if (title && /^https?:\/\//i.test(url)) results.push({ title, url, snippet });
+      }
+      if (!results.length) return `No web search results found for "${query}".`;
+      return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ''}`).join('\n\n');
+    },
+  };
+}
+
+function createLocalWebFetchTool() {
+  const MAX_BYTES = 1024 * 1024;
+  const MAX_CHARS = 20_000;
+  return {
+    name: 'web_fetch',
+    description: 'Fetch a web page by URL and return its readable text. offset: character offset to continue reading a long page.',
+    parameters: z.object({
+      url: z.string().min(1).max(2000),
+      offset: z.number().int().min(0).optional(),
+    }),
+    execute: async ({ url, offset = 0 }, ctx) => {
+      let at = String(url).trim();
+      const sig = ctx?.signal ? AbortSignal.any([ctx.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
+      let res;
+      for (let hops = 0; ; hops++) {
+        const blocked = await guardFetch(at);
+        if (blocked) throw new Error(blocked);
+        res = await fetch(at, {
+          headers: { 'user-agent': 'Mozilla/5.0 (compatible; Yomna/1.0)', accept: 'text/html, text/plain, application/json;q=0.9, */*;q=0.8' },
+          redirect: 'manual',
+          signal: sig,
+        });
+        if (res.status < 300 || res.status >= 400) break;
+        if (hops >= 5) throw new Error('Too many redirects.');
+        const loc = res.headers.get('location');
+        if (!loc) break;
+        at = new URL(loc, at).href;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${at}`);
+      const len = Number(res.headers.get('content-length') || 0);
+      if (len > MAX_BYTES) throw new Error('Page is too large to fetch.');
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_BYTES) throw new Error('Page is too large to fetch.');
+      const ct = res.headers.get('content-type') || '';
+      const raw = buf.toString('utf8');
+      const text = /html/i.test(ct) || /^\s*</.test(raw) ? stripHtml(raw) : raw.trim();
+      const start = Math.max(0, Math.min(offset, text.length));
+      const slice = text.slice(start, start + MAX_CHARS);
+      const more = start + MAX_CHARS < text.length ? `\n\n…(${text.length - (start + MAX_CHARS)} more characters; call web_fetch with offset ${start + MAX_CHARS} to continue)` : '';
+      return (slice || '(empty page)') + more;
+    },
+  };
+}
 
 // Tools run in parallel, but the overlay shows one yes/no at a time: a second one replaced the first and answered it
 // no, so the model retried and asked again. Yes/no questions wait their turn; one cancelled while waiting never shows.
@@ -255,8 +347,8 @@ export function oneYesNoAtATime(ask) {
   };
 }
 
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, focus = null, firedReminders = () => [], showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Jarvis isn\'t running.' }), workdir = HOME, fileDir = () => '', readOnly = () => [], own = null, sideSearch = async () => null, pointScale = () => 'pixels', skipAllow = () => false, rememberAllow = true, jobs = null, skills = null }) {
-  // Relative paths (and run_command) start in workdir: ~/Jarvis for the chat, its own folder for an agent.
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, focus = null, firedReminders = () => [], showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Yomna isn\'t running.' }), workdir = HOME, fileDir = () => '', readOnly = () => [], own = null, sideSearch = async () => null, pointScale = () => 'pixels', skipAllow = () => false, rememberAllow = true, jobs = null, skills = null }) {
+  // Relative paths (and run_command) start in workdir: ~/Yomna for the chat, its own folder for an agent.
   // fileDir: where the file tools' relative paths and run_command start instead, when set (the chat's second brain,
   // secondbrain.mjs), so `grep x _context/…` finds the same notes read_file does. Its read-only folders still hold.
   // readOnly: folders write_file and run_command never change (the second brain's _raw, safety.mjs).
@@ -297,7 +389,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
     };
   }
   async function hands(...args) {
-    if (!HANDS) throw new Error('This needs the Jarvis app.');
+    if (!HANDS) throw new Error('This needs the Yomna app.');
     // Acting in an app may take the real cursor: meanwhile clicks go through the overlay, even where the Sidekick or
     // its bubble sits on the spot being clicked.
     const acting = args[0] === 'act';
@@ -318,7 +410,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
       if (process.platform === 'darwin' && /Accessibility/i.test(res.error ?? '')) {
         // Open the exact Settings pane (once a minute at most) so the fix is one click away.
         if (Date.now() - axNudged > 60_000) { axNudged = Date.now(); openUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'); }
-        throw new Error('Accessibility is off for Jarvis, so I can\'t read or control other apps yet. I just opened System Settings → Privacy & Security → Accessibility: switch on Jarvis there, then ask again. Tell the user exactly that, briefly.');
+        throw new Error('Accessibility is off for Yomna, so I can\'t read or control other apps yet. I just opened System Settings → Privacy & Security → Accessibility: switch on Yomna there, then ask again. Tell the user exactly that, briefly.');
       }
       // What an act plan did before it stopped, in the helper's words.
       throw Object.assign(new Error(res.error || 'That did not work.'), Array.isArray(res.done) ? { done: res.done } : {});
@@ -349,7 +441,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
   // The helper's screenshot: one window or app (even behind others), or the screen; shrunk by the helper itself.
   async function handsShot(file, t) {
     const spec = t === 'screen' || t === 'front' || t.startsWith('window:') ? t : `app:${t}`;
-    // Shot straight away, with nothing played on screen (Jarvis only shows a "looking" tag).
+    // Shot straight away, with nothing played on screen (Yomna only shows a "looking" tag).
     // 1568 px is Claude's own cap; a bigger image gets shrunk again and its coordinates drift. The helper shrinks it
     // itself and says the final size; an older helper doesn't, so sips does it here.
     const res = await hands('capture', file, spec, '1568');
@@ -373,29 +465,29 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
   async function screenshot({ target = 'screen' } = {}, ctx) {
     const file = path.join(os.tmpdir(), `sidekick-${Date.now()}.jpg`);
     // Windows without the helper (or when it fails on the whole screen): PowerShell's screenshot below.
-    const viaHands = process.platform === 'darwin' || (process.platform === 'win32' && HANDS);
+    const viaHands = process.platform === 'darwin' || !!HANDS;
     const t = String(target || 'screen').trim();
-    const shot = viaHands ? await handsShot(file, t).catch((e) => { if (process.platform === 'win32' && t === 'screen') return null; throw e; }) : null;
+    const shot = viaHands ? await handsShot(file, t).catch((e) => { if ((process.platform === 'win32' || LINUX) && t === 'screen') return null; throw e; }) : null;
     if (shot) return shot;
     if (process.platform === 'win32') {
       // DPI-aware (or scaled displays capture only the top-left part), shrunk to Claude's 1568 px cap, and the
       // file path passed by environment variable so odd characters in it can't break the script.
       const ps = [
         'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
-        "Add-Type -Name D -Namespace JarvisWin -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();'",
-        '[JarvisWin.D]::SetProcessDPIAware() | Out-Null',
+        "Add-Type -Name D -Namespace YomnaWin -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();'",
+        '[YomnaWin.D]::SetProcessDPIAware() | Out-Null',
         '$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
         '$i=New-Object System.Drawing.Bitmap $b.Width,$b.Height',
         '[System.Drawing.Graphics]::FromImage($i).CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size)',
         '$s=[Math]::Min(1.0,1568.0/[Math]::Max($b.Width,$b.Height))',
         '$o=New-Object System.Drawing.Bitmap ([int]($b.Width*$s)),([int]($b.Height*$s))',
         "$g=[System.Drawing.Graphics]::FromImage($o);$g.InterpolationMode='HighQualityBicubic';$g.DrawImage($i,0,0,$o.Width,$o.Height)",
-        '$o.Save($env:JARVIS_SHOT,[System.Drawing.Imaging.ImageFormat]::Jpeg)',
+        '$o.Save($env:YOMNA_SHOT,[System.Drawing.Imaging.ImageFormat]::Jpeg)',
         // Physical size, the image size and the screen's scale, so draw can turn its pixels into overlay points.
         "Write-Output ('{0} {1} {2} {3} {4}' -f $b.Width,$b.Height,$o.Width,$o.Height,([System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero).DpiX/96))",
       ].join(';');
       // -EncodedCommand (UTF-16LE base64): no quoting for Windows' command line to mangle.
-      const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { env: { ...process.env, JARVIS_SHOT: file } });
+      const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { env: { ...process.env, YOMNA_SHOT: file } });
       if (r.err) throw new Error('Screen capture failed.');
       const [pw, ph, iw, ih, sc] = r.stdout.trim().split(/\s+/).map(Number);
       const scale = pointScale();
@@ -565,7 +657,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
         return ocrFind(where, find);
       },
       async findText(find) {
-        if (!HANDS) throw new Error('Finding words on screen needs the Jarvis app; take a screenshot and give x, y instead.');
+        if (!HANDS) throw new Error('Finding words on screen needs the Yomna app; take a screenshot and give x, y instead.');
         // Text read off the screen: one match, or where each of several is, so the right one can be picked with within.
         const readOne = async () => {
           const all = await this.textAll(find);
@@ -590,7 +682,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
         }
       },
       async id(n) {
-        if (!HANDS) throw new Error('read_window ids need the Jarvis app; give x, y from a screenshot instead.');
+        if (!HANDS) throw new Error('read_window ids need the Yomna app; give x, y from a screenshot instead.');
         live ??= await liveControls(spec);
         const c = live(n);
         if (c.offscreen) throw new Error(`"${c.label || c.role}" is further down the page. Use its text instead; that scrolls to it.`);
@@ -664,7 +756,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
       else if (m.kind === 'open') { await tools.find((x) => x.name === 'open').execute({ target: m.url }); }
       else if (m.kind === 'handoff') onHandoff(m.task || m.text || m.label || 'a task');
       else if (m.kind === 'type') {
-        if (!HANDS) throw new Error('Typing into apps needs the Jarvis app.');
+        if (!HANDS) throw new Error('Typing into apps needs the Yomna app.');
         const src = m.at.src, app = t === 'front' || t === 'screen' ? {} : { app: t };
         const steps = src.text != null ? [{ do: 'fill', field: src.text, text: m.text }]
           : src.id != null ? [{ do: 'click', id: m.at.live }, { do: 'type', text: m.text }]
@@ -688,7 +780,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
     const voice = (line) => { const v = speak(line); if (v === 'later') later = true; return !!v; };
     // Clicks and hovers in other apps can't be seen here (Wayland): the beats play one after another instead.
     const beats = (args.beats ?? []).map((b) => (POINTER_OK || !b.wait ? b : { ...b, wait: undefined }));
-    if (beats.some((b, i) => b !== (args.beats ?? [])[i])) notes.push("This desktop doesn't let Jarvis see clicks in other apps, so the beats played one after another instead of waiting for clicks.");
+    if (beats.some((b, i) => b !== (args.beats ?? [])[i])) notes.push("This desktop doesn't let Yomna see clicks in other apps, so the beats played one after another instead of waiting for clicks.");
     for (const e of edits) if (e.do !== 'clear' && !parts.has(e.part)) throw new Error(`There's no ${e.part} on screen now${parts.ids.length ? ` (there is: ${parts.describe()})` : ' (nothing is drawn)'}. Draw it again instead.`);
     // A new drawing in a later request replaces the old one (cards too), unless it's editing what's there or keeps
     // the cards (the user asked to keep them up, #113).
@@ -891,6 +983,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
           for (const s of mapped) {
             const label = s.do === 'click_text' ? s.text : s.do === 'click' ? s.label : s.do === 'choose' ? s.option : null;
             if (label && isRiskyClick(label)) {
+              if (ctx?.mcpConfirmed && s.confirmed) { delete s.label; continue; }
               const kind = riskyKind(label);
               // "front" or "browser" could be a different app by the next call, so those aren't remembered past this plan.
               const key = !rememberAllow || /^(front|browser)$/i.test(appName) ? null : `${appName.toLowerCase()}|${kind}`;
@@ -940,7 +1033,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
     ] : []),
     {
       name: 'draw',
-      description: `Draw on the user's screen while you talk. Your Jarvis turns into its cursor and draws with its tip, each beat's marks paced to its spoken line (also shown as a caption). One call holds a whole explanation or walkthrough.
+      description: `Draw on the user's screen while you talk. Yomna turns into its cursor and draws with its tip, each beat's marks paced to its spoken line (also shown as a caption). One call holds a whole explanation or walkthrough.
 beats: [{say, marks, wait?}]. say: one short line, under 20 words, spoken and captioned while that beat's marks draw, so your reply after draw never repeats or rephrases it (no restating the steps). Keep 1 to 4 marks per beat, in the order you mention them.
 Places (at, to, tie), best first: {text: the exact words shown on screen} (exact bounds, scrolls to it; target 'screen' searches every app; also words inside paragraphs, text in images or canvases, and a single character, which matches case); add every: true to mark every place that text appears (each letter s, each mention of a word), one mark per place, and within: {x, y, w, h} (screenshot pixels, x, y the centre) to keep to one part of the screen (every s in one sentence); {id} from read_window, for controls without words; {x, y, w, h} pixels in your latest screenshot, for icons, shapes and areas without words: x, y is the thing's centre, and w, h its whole width and height; the box is then fitted to what's really drawn there, so a close guess is enough.
 Which mark: one control they should click: target (with wait 'click' in a walkthrough); one thing to notice: ring (follows its shape; r sets the corner radius); a small spot or icon: point; a region or panel: frame; key words: underline (outdated ones: strike); right or wrong: check, cross; order of steps: num; a name beside something: label (text) or label on any mark; how two things relate: connect (at → to; flow: true runs moving dots along it, for something that travels or keeps happening); an odd-shaped group: trace (points); scroll here: scroll (dir); one thing above all else: spotlight (sparingly); something to hover: hover with wait 'hover'; big words: write (text, size).
@@ -1028,14 +1121,10 @@ A drawing stays until the user clears it or the window changes; your next drawin
         return out;
       },
     },
-    // GG Coder's own web tools: search with a side search or keyless engines, pages as Markdown with offset to read on.
-    createWebSearchTool(undefined, async (req) => {
-      const side = sideSearchFor(await Promise.resolve().then(sideSearch).catch(() => null));
-      return side ? side(req) : null;
-    }),
-    createWebFetchTool(undefined, { guardUrl: guardFetch }),
+    createLocalWebSearchTool(),
+    createLocalWebFetchTool(),
     {
-      name: 'open', description: 'Open a website, a file or folder, or an app by name (e.g. "Safari", "https://skool.com", "~/Documents"). Links open in the default browser; set app to open one in a particular browser or app (e.g. app "Safari" when the user says "in Safari").',
+      name: 'open', description: 'Open a website, a file or folder, or an app by name (e.g. "Safari", "https://example.com", "~/Documents"). Links open in the default browser; set app to open one in a particular browser or app (e.g. app "Safari" when the user says "in Safari").',
       parameters: z.object({ target: z.string(), app: z.string().optional() }),
       execute: async ({ target, app }) => {
         let t = String(target).trim();
@@ -1253,5 +1342,47 @@ A drawing stays until the user clears it or the window changes; your next drawin
     const b = r?.window?.bounds;
     return Array.isArray(b) && b.length === 4 && b.every(Number.isFinite) ? b : null;
   }
-  return { tools, hands, whereNow, frontNow, frontBounds, ink: inkEvents, nextTurn: () => ++turn };
+  async function areaCrop() {
+    if (!HANDS && process.platform !== 'darwin') throw new Error('Area selection needs the Yomna app (yomna-hands).');
+    const file = path.join(os.tmpdir(), `yomna-area-${Date.now()}.png`);
+    const res = await hands('select', file);
+    if (res.cancelled) throw new Error('Area selection cancelled.');
+    await fitImage(file);
+    return { content: [{ type: 'text', text: 'Selected screen area.' }, await imageBlock(file, 'image/png')] };
+  }
+  async function resolveControlLabel(id, target = 'front') {
+    if (!HANDS) return null;
+    try {
+      const spec = target === 'front' ? 'front' : target.startsWith('window:') ? target : `app:${target}`;
+      const fresh = await hands('ui', spec, 'controls');
+      const ctrl = (fresh?.controls ?? []).find((c) => c.id === id);
+      return ctrl?.label || ctrl?.text || null;
+    } catch { return null; }
+  }
+  const byName = (name) => tools.find((t) => t.name === name);
+  const wrapTool = (name, extraCtx = {}) => {
+    const t = byName(name);
+    if (!t) return null;
+    return (args, ctx = {}) => t.execute(args, { toolCallId: ctx.toolCallId ?? `mcp-${Date.now()}`, ...extraCtx, ...ctx });
+  };
+  const desktopHandlers = {
+    allowActions: () => !!allowActions(),
+    confirmOnOverlay: async (req) => confirm(req.message, undefined),
+    resolveControlLabel,
+    take_screenshot: wrapTool('take_screenshot'),
+    area_crop: () => areaCrop(),
+    draw: wrapTool('draw'),
+    list_windows: wrapTool('list_windows'),
+    read_window: wrapTool('read_window'),
+    act_in_app: wrapTool('act_in_app', { mcpConfirmed: true }),
+    remember_commitment: wrapTool('remember_commitment'),
+    update_commitment: wrapTool('update_commitment'),
+    list_commitments: wrapTool('list_commitments'),
+    forget_fact: wrapTool('forget_fact'),
+    show_list: wrapTool('show_list'),
+    snooze_reminder: wrapTool('snooze_reminder'),
+    ...(jobs ? { schedule_job: wrapTool('schedule_job'), list_jobs: wrapTool('list_jobs') } : {}),
+    ...(focus ? { start_focus: wrapTool('start_focus'), stop_focus: wrapTool('stop_focus') } : {}),
+  };
+  return { tools, hands, whereNow, frontNow, frontBounds, ink: inkEvents, nextTurn: () => ++turn, desktopHandlers };
 }

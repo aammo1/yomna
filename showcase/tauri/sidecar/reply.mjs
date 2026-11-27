@@ -51,7 +51,7 @@ export class EchoFilter {
   }
 }
 
-// Gemini's reasoning summary sent as plain reply text (no thought flag on the part, so gg-ai can't tell it from the
+// Gemini's reasoning summary sent as plain reply text (no thought flag on the part, so the parser can't tell it from the
 // answer): a bold heading that starts with an -ing word, a blank line, its planning prose, then two blank lines and
 // the real answer. Dropped only at the start of a model turn and only in that exact shape: the prose is one paragraph
 // that reads as planning (it opens "I…", "My…" or "The user…"). A heading over anything else ("**Morning Briefing**",

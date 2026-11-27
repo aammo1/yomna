@@ -47,7 +47,8 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'livebrain-'));
 { // Every tool becomes one Live function declaration (JSON Schema, no zod), and the slow ones don't block the call.
   const { tools } = createTools({ ...base, ask: async () => null });
   const [{ functionDeclarations: decls }] = liveDeclarations(tools);
-  assert.deepEqual(decls.map((d) => d.name), tools.map((t) => t.name));
+  assert.ok(decls.some((d) => d.name === 'delegate_to_harness'), 'live declarations include delegate_to_harness');
+  assert.deepEqual(decls.map((d) => d.name), [...tools.map((t) => t.name), 'delegate_to_harness']);
   const read = decls.find((d) => d.name === 'read_file');
   assert.equal(read.parametersJsonSchema.type, 'object');
   assert.deepEqual(read.parametersJsonSchema.required, ['path']);
@@ -65,7 +66,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'livebrain-'));
   const { config } = t.calls[0].params;
   assert.ok(config.systemInstruction.startsWith('You are Jarvis. Memory: likes tea.'));
   assert.match(config.systemInstruction, /out loud/i);
-  assert.equal(config.tools[0].functionDeclarations.length, tools.length);
+  assert.equal(config.tools[0].functionDeclarations.length, tools.length + 1);
   brain.stop();
 }
 

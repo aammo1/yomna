@@ -166,8 +166,8 @@ for (const s of [400, 401, 403]) assert.deepEqual(await geminiAccount('k', { fet
 assert.deepEqual(await geminiAccount('k', { fetchImpl: fake(503) }), { ok: false, reason: 'network' });
 assert.deepEqual(await geminiAccount('k', { fetchImpl: async () => { throw new Error('offline'); } }), { ok: false, reason: 'network' });
 
-// Each look has its own Gemini voice, one of Gemini's, and no two looks share one.
-assert.deepEqual(Object.keys(GEMINI_LOOK_VOICES), ['jarvis', 'glayos', 'ultren', 'sarah', 'adrian', 'rita'], 'the same looks as sidekick.mjs LOOKS');
+// Each look has its own Gemini voice, one of Gemini's (with legacy 'jarvis' alias mapped to 'yomna').
+assert.deepEqual(Object.keys(GEMINI_LOOK_VOICES), ['yomna', 'jarvis', 'glayos', 'ultren', 'sarah', 'adrian', 'rita']);
 for (const v of Object.values(GEMINI_LOOK_VOICES)) assert.ok(GEMINI_VOICES.some((x) => x.id === v), `${v} is a Gemini voice`);
 assert.equal(new Set(Object.values(GEMINI_LOOK_VOICES)).size, 6);
 console.log('gemini tests passed');

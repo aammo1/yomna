@@ -91,9 +91,9 @@ assert.equal(LOOP_LIMIT, 3);
 // Wired once on the chat's shared tools, so Classic and Live both log outcomes and both stop loops.
 {
   const side = readFileSync(fileURLToPath(new URL('../sidekick.mjs', import.meta.url)), 'utf8');
-  assert.match(side, /\nguardTools\(tools, \{ log: [^\n]*request: \(\) => requestNo/, 'each request (a Classic message or a Live turn) counts from zero');
-  assert.match(side, /tools, system: liveSystem/, 'the Live brain gets the same tools array');
-  assert.match(side, /\nguardTools\(tools, \{[^\n]*goals: true/, 'the chat and Live stop failing app steps by goal');
+  assert.match(side, /guardTools\(tools, \{ log: [^\n]*request: \(\) => requestNo/, 'each request (a Classic message or a Live turn) counts from zero');
+  assert.match(side, /tools,\s*system: liveSystem/, 'the Live brain gets the same tools array');
+  assert.match(side, /guardTools\(tools, \{[^\n]*goals: true/, 'the chat and Live stop failing app steps by goal');
 }
 
 // Regression: looking is never refused. A screenshot's text is a fixed caption, so "what's on screen now?" asked four

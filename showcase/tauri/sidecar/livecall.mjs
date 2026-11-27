@@ -1,4 +1,4 @@
-// A Live call as Jarvis runs it: the glue between the Live brain (livebrain.mjs) and the rest of the app. A tap of the
+// A Live call as Yomna runs it: the glue between the Live brain (livebrain.mjs) and the rest of the app. A tap of the
 // talk chord opens or hangs up the call (toggle), the helper's mic frames go in (pcm), her voice goes to the overlay's
 // player as speech chunks, cutting in stops it at once, captions become bubbles (yours in the listening bubble, hers
 // as a reply in the agent stream, the same one Classic uses), and the tool tags show as in Classic. A failure hangs up
@@ -15,7 +15,7 @@ const ERRORS = {
   network: "I couldn't reach Gemini Live. Check the internet, or switch to Classic.",
   dropped: 'The Live call dropped. Switch to Classic to keep talking?',
   mic: "I can't use the microphone for the Live call. Switch to Classic?",
-  mic_permission: "macOS isn't letting me use the microphone for the Live call. Turn on Jarvis in the Privacy settings I just opened, or switch to Classic.",
+  mic_permission: "macOS isn't letting me use the microphone for the Live call. Turn on Yomna in the Privacy settings I just opened, or switch to Classic.",
 };
 export const liveErrorText = (reason) => ERRORS[reason] ?? ERRORS.dropped;
 export const SWITCH_TO_CLASSIC = 'Switch to Classic';
@@ -27,7 +27,7 @@ export const DRAW_HOLD_MS = 5000;
 // cancellation leaves some of her own voice in; too low and she cuts herself off, too high and she talks over him).
 export const CUT_IN = { rms: 0.04, holdMs: 150 };
 // After a hang-up the wake word waits until her voice sent so far has had time to play, plus this long, so her goodbye
-// ("Very good, Jarvis signing off") can't open a new call.
+// ("Very good, Yomna signing off") can't open a new call.
 export const WAKE_SETTLE_MS = 1000;
 // A hung-up call gets a memory pass only when he said at least this many characters in it.
 export const MIN_LEARN_CHARS = 20;

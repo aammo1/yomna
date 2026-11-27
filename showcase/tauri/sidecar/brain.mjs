@@ -1,67 +1,66 @@
 // Side calls next to the conversation: folding old turns into a summary, the memory pass that learns
-// lasting facts about the user, and the skill pass that keeps a how-to from a request that took many steps. One tool-less turn each, on the cheaper summary model, on this computer's
-// own sign-in. What comes back is redacted and checked before anything is stored.
-import { Agent } from '@kenkaiiii/gg-agent';
-import { REDACTION_MARKER, environmentSecrets, redactText } from '@kenkaiiii/gg-ai';
-import { getLowestThinkingLevel, getModel, getSummaryModel } from '@kenkaiiii/gg-core';
-import { ClaudeCodeAgent } from './claudecode.mjs';
-import { agentEvents } from './agentstream.mjs';
+// lasting facts about the user, and the skill pass that keeps a how-to from a request that took many steps.
+// Runs through the active CLI harness (harnesses/index.mjs). What comes back is redacted and checked before anything is stored.
 import { redactArgs } from './safety.mjs';
 
 const TIMEOUT_MS = 120_000;
-const TIER = { low: 0, medium: 1, high: 2 };
+export const REDACTION_MARKER = '[REDACTED]';
 
-/** gg-core's summary model, unless the current one is already cheaper (Haiku is cheaper than Sonnet). */
-export function summaryModelFor(provider, model) {
-  const s = getSummaryModel(provider, model), cur = getModel(model);
-  if (!s) return model;
-  return cur && TIER[cur.costTier] !== undefined && TIER[s.costTier] !== undefined && TIER[cur.costTier] < TIER[s.costTier] ? model : s.id;
-}
+const SECRET_ENV_RE = /(?:key|token|secret|password|passphrase|auth|cookie|credential)/i;
+const SECRET_VALUE_PATTERNS = [
+  /\b(?:sk|rk|pk)-(?:ant-|proj-|or-|svcacct-)?[A-Za-z0-9_-]{16,}/g,
+  /\bxai-[A-Za-z0-9_-]{16,}/g,
+  /\bAIza[0-9A-Za-z_-]{20,}/g,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
+  /([?&](?:key|token|access_token|refresh_token|api_key|apikey|secret|password)=)[^&\s"']+/gi,
+];
 
-const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-/** The model's lowest thinking level, but never above the chat's (`cap`; null: thinking off). Some models list
- *  only one level in gg-core (high on Gemini), while the chat already runs them at low. */
-export function sideThinking(provider, model, cap) {
-  const lowest = getLowestThinkingLevel(provider, model);
-  if (!lowest || cap === null) return undefined;
-  if (cap === undefined || !LEVELS.includes(cap)) return lowest;
-  return LEVELS.indexOf(cap) < LEVELS.indexOf(lowest) ? cap : lowest;
-}
-
-async function once({ system, text, provider, model, cc, credsFor, cwd, signal, chatThinking }) {
-  const thinking = sideThinking(provider, model, chatThinking);
-  const common = { model, system, tools: [], maxTurns: 1, thinking, signal };
-  const agent = cc
-    ? new ClaudeCodeAgent({ ...common, executable: cc.executable, env: cc.env, cwd })
-    : new Agent({
-      ...common, provider,
-      resolveCredentials: async () => { const c = await credsFor(model); return { apiKey: c.accessToken, ...(c.accountId !== undefined ? { accountId: c.accountId } : {}) }; },
-      baseUrl: (await credsFor(model).catch(() => null))?.baseUrl,
-    });
-  let out = '';
-  for await (const e of agentEvents(agent.prompt(text))) {
-    if (e.type === 'text_delta') out += e.text;
-    else if (e.type === 'error') throw e.error;
+/** Collects secret values from environment variables for redaction. */
+export function environmentSecrets(env = process.env) {
+  const out = [];
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (typeof v === 'string' && v.length >= 8 && SECRET_ENV_RE.test(k)) out.push(v);
   }
-  if (!out.trim()) throw new Error('empty reply');
+  return out;
+}
+
+/** Local regex + environment secret redaction replacing matches with REDACTION_MARKER. */
+export function redactText(text, { secrets = [] } = {}) {
+  let out = String(text ?? '');
+  for (const s of secrets) {
+    if (s && out.includes(s)) out = out.split(s).join(REDACTION_MARKER);
+  }
+  for (const re of SECRET_VALUE_PATTERNS) {
+    out = out.replace(re, (m, prefix) => (prefix ? `${prefix}${REDACTION_MARKER}` : REDACTION_MARKER));
+  }
+  return out;
+}
+
+async function once({ harnessManager, system, text, cwd, secondBrainDirs, mcpConfigPath, signal }) {
+  if (!harnessManager) throw new Error('No harness manager configured');
+  const out = await harnessManager.oneShot({
+    prompt: text,
+    systemPrompt: system,
+    cwd,
+    secondBrainDirs,
+    mcpConfigPath,
+    allowActions: false,
+    signal,
+  });
+  if (!String(out ?? '').trim()) throw new Error('empty reply');
   return out;
 }
 
 /**
- * One tool-less turn: { system, text, provider, model (the current one), cc (Claude Code route or null),
- * credsFor(modelId), cwd, signal, chatThinking (the chat's level, null when off) }. Runs on the summary model, then once more on the current model if that fails.
+ * One tool-less turn through the active CLI harness: { harnessManager, system, text, cwd, secondBrainDirs, mcpConfigPath, signal }.
  * Resolves { text, model }.
  */
 export async function oneShot(o) {
   const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(o.signal ? [o.signal] : [])]);
-  const first = summaryModelFor(o.provider, o.model);
-  try {
-    return { text: await (o.run ?? once)({ ...o, model: first, signal }), model: first };
-  } catch (e) {
-    if (first === o.model || signal.aborted) throw e;
-    console.error(`[brain] ${first} failed (${String(e?.message ?? e).slice(0, 120)}); retrying on ${o.model}`);
-    return { text: await (o.run ?? once)({ ...o, signal }), model: o.model };
-  }
+  const text = await (o.run ?? once)({ ...o, signal });
+  return { text, model: o.harnessManager?.activeId ?? o.model ?? 'harness' };
 }
 
 // ---------- prompts ----------

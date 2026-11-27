@@ -4,16 +4,14 @@
 // in:  {t:'start', agent, model, content} {t:'reply', id, value} {t:'steer', text} {t:'allow', on}
 // out: {t:'beat'} {t:'tick'} {t:'tool', name} {t:'ui', m} (an operator's {kind:'hands'} overlay message) {t:'turn', usage} {t:'plan', text} {t:'ask', id, question} {t:'ask_cancel', id}
 //      {t:'creds', id} {t:'finish', result} {t:'end', ok, error?}
-import { Agent } from '@kenkaiiii/gg-agent';
-import { pointScale, registerRuntimeModels } from '@kenkaiiii/gg-core';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
-import { ClaudeCodeAgent } from './claudecode.mjs';
-import { CodexAgent } from './codex.mjs';
 import { agentEvents } from './agentstream.mjs';
-import { createTools } from './tools.mjs';
+import { agentSystem, checkFinish, toolsFor } from './agents.mjs';
+import { HarnessManager } from './harnesses/index.mjs';
 import { guardTools } from './loopguard.mjs';
-import { agentSystem, checkFinish, steersAfterTurn, toolsFor } from './agents.mjs';
+import { createDesktopMcpBridge } from './mcp-desktop.mjs';
+import { createTools } from './tools.mjs';
 
 // stdout isn't the app's protocol here, but the sidecar only reads stderr from this process.
 console.log = console.info = (...a) => console.error(...a);
@@ -32,12 +30,11 @@ function request(msg, signal) {
   });
 }
 
-let allow = true, agent = null, route = 'api', started = false;
+let allow = true, agent = null, harnessMgr = null, started = false;
 const queued = [];
 function steer(text) {
   const t = `(Message from the user while you work: ${text})`;
-  // The API route takes it mid-run; Claude Code and Codex get it as the next turn.
-  if (route === 'api' && agent?.running) agent.steer({ role: 'user', content: t });
+  if (agent?.running) agent.steer({ role: 'user', content: t });
   else queued.push(t);
 }
 
@@ -50,6 +47,7 @@ process.on('message', (m) => {
 
 function end(ok, error) {
   clearInterval(beat);
+  harnessMgr?.dispose?.();
   send({ t: 'end', ok, ...(error ? { error } : {}) }, () => process.exit(0));
 }
 const beat = setInterval(() => send({ t: 'beat' }), 15_000);
@@ -67,22 +65,12 @@ export function trimRun(msgs, budgetChars) {
 
 async function run({ agent: a, model: md, content }) {
   allow = a.allow !== false;
-  route = steersAfterTurn(md.route) ? md.route : 'api';
   let result = null;
-  const { tools: all } = createTools({
-    // The overlay hears an operator take the cursor (and where each step lands), as it does for the chat's own act_in_app.
+  const { tools: all, desktopHandlers } = createTools({
     allowActions: () => allow, ui: (m) => { if (m?.kind === 'hands') send({ t: 'ui', m }); }, openUrl: () => {}, onCommitments: () => {}, showList: () => {}, fmtWhen: (ms) => new Date(ms).toLocaleString(),
-    commitmentsText: () => '', userName: a.userName || 'The user', workdir: a.dir, own: a.dir, readOnly: () => a.readOnly ?? [], pointScale: () => pointScale(md.model ?? ''),
-    // Its whole job is one request (nothing here starts a new one), so a yes covers one risky click, never the rest of the run.
+    commitmentsText: () => '', userName: a.userName || 'The user', workdir: a.dir, own: a.dir, readOnly: () => a.readOnly ?? [], pointScale: () => 'pixels',
     rememberAllow: false,
     ask: (opts, signal) => request({ t: 'ask', question: String(opts?.placeholder ?? '').slice(0, 300) }, signal).then((yes) => (yes ? 'yes' : null)),
-    // web_search's side search runs on the same Anthropic sign-in as this agent; other providers use the keyless engines.
-    sideSearch: async () => {
-      if (md.provider !== 'anthropic') return null;
-      if (route === 'claude-code') return { cc: md.cc, cwd: a.dir };
-      const c = await request({ t: 'creds' });
-      return c?.apiKey ? { apiKey: c.apiKey, baseUrl: md.baseUrl } : null;
-    },
   });
   const tools = [
     ...guardTools(toolsFor(a.type, all)),
@@ -103,49 +91,85 @@ async function run({ agent: a, model: md, content }) {
       },
     },
   ];
-  if (md.modelInfo) registerRuntimeModels([md.modelInfo]);
+
   const ctl = new AbortController();
-  const budget = (md.budget ?? 100_000) * 3.6;
-  const common = {
-    model: md.model, system: agentSystem(a.type, { dir: a.dir, userName: a.userName, deliverTo: a.deliverTo, returns: a.returns }), tools, maxTurns: a.maxTurns ?? 80,
-    thinking: md.thinking ?? undefined, signal: ctl.signal, priorMessages: [], transformContext: (msgs) => trimRun(msgs, budget),
-  };
-  const Fake = process.env.JARVIS_FAKE_AGENT ? (await import(pathToFileURL(process.env.JARVIS_FAKE_AGENT).href)).default : null;
-  if (Fake) agent = new Fake({ ...common, provider: md.provider });
-  else if (route === 'claude-code') agent = new ClaudeCodeAgent({ ...common, executable: md.cc.executable, env: md.cc.env, cwd: a.dir });
-  // Codex runs headless with our tools served to it over MCP (codex.mjs); md.codex is the CLI to run.
-  // Types that make or move files (the Builder, Writer, Tidier) may let Codex write in their folder while actions are
-  // allowed (checked again for every turn, so turning actions off mid-run reaches the next one); researchers and
-  // operators stay read-only.
-  else if (route === 'codex') agent = new CodexAgent({ ...common, codex: md.codex, cwd: a.dir, write: () => allow && (a.type === 'maker' || a.type === 'organizer') });
-  else {
-    agent = new Agent({
-      ...common, provider: md.provider, maxTurnExtensions: 0, baseUrl: md.baseUrl, transportSessionId: a.id ? `jarvis-agent-${a.id}` : undefined,
-      resolveCredentials: async () => {
-        const c = await request({ t: 'creds' });
-        if (!c?.apiKey) throw new Error(c?.error || 'No sign-in for this model.');
-        return { apiKey: c.apiKey, ...(c.accountId !== undefined ? { accountId: c.accountId } : {}) };
-      },
-    });
-  }
+  const sys = agentSystem(a.type, { dir: a.dir, userName: a.userName, deliverTo: a.deliverTo, returns: a.returns });
+  const maxTurns = a.maxTurns ?? 80;
+  const fakePath = process.env.YOMNA_FAKE_AGENT || process.env.JARVIS_FAKE_AGENT;
+  const Fake = fakePath ? (await import(pathToFileURL(fakePath).href)).default : null;
 
   let lastTick = 0, outOfTurns = false;
   const tick = () => { const n = Date.now(); if (n - lastTick > 5000) { lastTick = n; send({ t: 'tick' }); } };
-  const once = async (input) => {
-    for await (const e of agentEvents(agent.prompt(input))) {
-      if (e.type === 'text_delta' || e.type === 'thinking_delta' || e.type === 'toolcall_delta') tick();
-      else if (e.type === 'tool_call_start') send({ t: 'tool', name: e.name });
-      else if (e.type === 'tool_call_end') tick();
-      else if (e.type === 'server_tool_call') send({ t: 'tool', name: 'web_search' });
-      else if (e.type === 'turn_end') { const u = e.usage ?? {}; send({ t: 'turn', usage: { in: (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0), out: u.outputTokens ?? 0 } }); }
-      else if (e.type === 'max_turns') outOfTurns = true;
-      else if (e.type === 'error') throw e.error;
+
+  if (Fake) {
+    const budget = (md?.budget ?? 100_000) * 3.6;
+    const common = {
+      model: md?.model, system: sys, tools, maxTurns,
+      thinking: md?.thinking ?? undefined, signal: ctl.signal, priorMessages: [], transformContext: (msgs) => trimRun(msgs, budget),
+    };
+    agent = new Fake({ ...common, provider: md?.provider });
+    const once = async (input) => {
+      for await (const e of agentEvents(agent.prompt(input))) {
+        if (e.type === 'text_delta' || e.type === 'thinking_delta' || e.type === 'toolcall_delta') tick();
+        else if (e.type === 'tool_call_start') send({ t: 'tool', name: e.name });
+        else if (e.type === 'tool_call_end') tick();
+        else if (e.type === 'server_tool_call') send({ t: 'tool', name: 'web_search' });
+        else if (e.type === 'turn_end') { const u = e.usage ?? {}; send({ t: 'turn', usage: { in: (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0), out: u.outputTokens ?? 0 } }); }
+        else if (e.type === 'max_turns') outOfTurns = true;
+        else if (e.type === 'error') throw e.error;
+      }
+    };
+    await once(content);
+    while (queued.length && !outOfTurns) await once(queued.splice(0).join('\n'));
+    if (!result && !outOfTurns) await once('(You stopped without calling finish. Call finish now with what you made. If you couldn\'t make it, finish with an outcome that says so in plain words.)');
+    if (result) return end(true);
+    return end(false, outOfTurns ? `Used all its ${maxTurns} turns` : 'Ended without a result');
+  }
+
+  // Real background agent execution through the configured CLI harness + local yomna-desktop MCP bridge.
+  const bridge = await createDesktopMcpBridge(desktopHandlers);
+  try {
+    const harnessId = md?.harness || 'agy';
+    const customOpts = md?.customHarness?.command ? { custom: { binary: md.customHarness.command, args: md.customHarness.args, mode: md.customHarness.protocol === 'cli' ? 'cli' : 'acp' } } : {};
+    harnessMgr = new HarnessManager({ harness: harnessId, options: customOpts });
+
+    const runTurn = async (promptText) => {
+      const promptStr = typeof promptText === 'string' ? promptText : Array.isArray(promptText) ? promptText.map((p) => p?.text ?? '').join('\n') : String(promptText ?? '');
+      let text = '';
+      let doneText = null;
+      for await (const ev of harnessMgr.send({
+        prompt: promptStr,
+        systemPrompt: sys,
+        cwd: a.dir,
+        mcpConfigPath: bridge.configPath,
+        allowActions: allow,
+        signal: ctl.signal,
+      })) {
+        if (ev.type === 'text_delta' || ev.type === 'thinking_delta') { tick(); if (ev.type === 'text_delta') text += ev.text; }
+        else if (ev.type === 'tool_start') send({ t: 'tool', name: String(ev.name ?? 'tool').replace(/^(?:mcp__)?yomna-desktop__/, '') });
+        else if (ev.type === 'tool_end') tick();
+        else if (ev.type === 'done') doneText = ev.text;
+        else if (ev.type === 'error') throw new Error(ev.message);
+      }
+      return (doneText ?? text).trim();
+    };
+
+    let finalReply = await runTurn(content);
+    while (queued.length) {
+      const next = await runTurn(queued.splice(0).join('\n'));
+      if (next) finalReply = next;
     }
-  };
-  await once(content);
-  // Claude Code and Codex have no mid-run steering: what was said meanwhile is the next turn.
-  while (queued.length && !outOfTurns) await once(queued.splice(0).join('\n'));
-  if (!result && !outOfTurns) await once('(You stopped without calling finish. Call finish now with what you made. If you couldn\'t make it, finish with an outcome that says so in plain words.)');
-  if (result) return end(true);
-  end(false, outOfTurns ? `Used all its ${common.maxTurns} turns` : 'Ended without a result');
+    if (!result && finalReply) {
+      const outcome = finalReply.split(/[\n.!?]/)[0].trim().slice(0, 88) || 'Completed background task.';
+      const checked = checkFinish({ outcome, ...(a.returns === 'answer' ? { report: finalReply.slice(0, 1180) } : {}) }, { dir: a.dir, deliverTo: a.deliverTo, returns: a.returns });
+      if (!checked.error) {
+        result = checked.result;
+        send({ t: 'finish', result });
+      }
+    }
+    if (result) return end(true);
+    return end(false, 'Ended without a result');
+  } finally {
+    await bridge.close().catch(() => {});
+  }
 }

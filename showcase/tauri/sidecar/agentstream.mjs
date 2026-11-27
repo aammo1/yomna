@@ -1,8 +1,7 @@
-// gg-agent also rejects a stream's result promise when a request fails. Nothing awaits it while we iterate,
-// so Node treats it as unhandled and exits. The error still reaches the caller through the events.
+// Safely consumes an async stream without unhandled rejections if the underlying promise rejects during iteration.
 export function agentEvents(stream) {
   const events = stream[Symbol.asyncIterator](); // claim the events first so then() doesn't drain them
-  stream.then(undefined, () => {});
+  if (typeof stream?.then === 'function') stream.then(undefined, () => {});
   return events;
 }
 
@@ -17,8 +16,9 @@ export function stallWatch(ms, onStall) {
   arm();
   return {
     event(e) {
-      if (e?.type === 'tool_call_start') tools.add(e.toolCallId);
-      else if (e?.type === 'tool_call_end') tools.delete(e.toolCallId);
+      const id = e?.toolCallId ?? e?.id ?? 'tool';
+      if (e?.type === 'tool_call_start' || e?.type === 'tool_start') tools.add(id);
+      else if (e?.type === 'tool_call_end' || e?.type === 'tool_end') tools.delete(id);
       arm();
     },
     stop() { done = true; clearTimeout(timer); },

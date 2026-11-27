@@ -1,10 +1,10 @@
-// JARVIS look for the sidekick: no face and no body, the way the films show Stark's AI. A globe of LED points
-// with a lit heart (the Wave Sphere study), rippled by the voice. The cursor form is a HUD reticle, and the
-// moments the goo blob acts out (heart, bolt, alarm, anger, flame) become HUD read-outs here.
+// Yomna glowing orb look for the sidekick: a globe of LED points with a lit heart (the Wave Sphere study),
+// rippled by the voice. The cursor form is a HUD reticle, and the moments the companion acts out (heart, bolt,
+// alarm, anger, flame) become HUD read-outs here.
 // Everything else (following, bubbles, tools, sizes) is the same sidekick; 10-dither.js calls into this when
-// the look is 'jarvis'. Pure drawing: it only writes LED cells through the kit it's given.
+// the look is 'yomna' (or 'jarvis' alias). Pure drawing: it only writes LED cells through the kit it's given.
 (() => {
-  const R = window.Jarvis;
+  const R = window.Yomna || window.Jarvis;
   const TAU = Math.PI * 2;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
@@ -26,7 +26,7 @@
     flame: ['..#...', '..##..', '.###.#', '.#####', '######', '##.###', '#...##', '.####.'],
   };
 
-  R.jarvis = {
+  R.yomna = R.jarvis = {
     // Voice level: rises while it talks or hears you, settles to a slow breath otherwise.
     level(st) {
       const t = st.t;

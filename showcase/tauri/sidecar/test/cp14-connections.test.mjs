@@ -9,8 +9,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-cp14-test-'));
-process.env.HOME = TMP; process.env.USERPROFILE = TMP; delete process.env.JARVIS_DATA_DIR;
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'yomna-cp14-test-'));
+process.env.HOME = TMP; process.env.USERPROFILE = TMP; delete process.env.YOMNA_DATA_DIR;
 process.on('exit', () => fs.rmSync(TMP, { recursive: true, force: true }));
 const SIDECAR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -24,7 +24,7 @@ if (a[0] === 'act') o = { ok: true, done: JSON.parse(a[1]).steps.map((s) => s.do
 if (a[0] === 'ui') o = { ok: true, window: win, controls: [], texts: [], note: 'Nothing to list.' };
 console.log(JSON.stringify(o));
 `);
-process.env.JARVIS_HANDS = handsFake;
+process.env.YOMNA_HANDS = handsFake;
 
 const { startFakeMcp } = await import('./fakemcpserver.mjs');
 const { createMcp, createMcpTools } = await import('../mcp.mjs');
@@ -135,10 +135,8 @@ if (process.platform !== 'win32') {
 
 // ---------- CP-14 voice config and computer control: the real sidecar, its stdin protocol, a throwaway HOME ----------
 function startSidekick(home) {
-  // JARVIS_DATA_DIR keeps keys in a test file (never the real keychain, keyring or DPAPI), and no hands helper or
-  // real API key from the runner's environment reaches it.
-  const env = { ...process.env, HOME: home, USERPROFILE: home, JARVIS_DATA_DIR: path.join(home, 'data') };
-  for (const k of Object.keys(env)) if (/_API_KEY$|^JARVIS_HANDS$|^JARVIS_AGENT$/.test(k)) delete env[k];
+  const env = { ...process.env, HOME: home, USERPROFILE: home, YOMNA_DATA_DIR: path.join(home, 'data') };
+  for (const k of Object.keys(env)) if (/_API_KEY$|^YOMNA_HANDS$|^YOMNA_AGENT$|^JARVIS_HANDS$|^JARVIS_AGENT$/.test(k)) delete env[k];
   const p = spawn(process.execPath, [path.join(SIDECAR, 'sidekick.mjs')], { cwd: SIDECAR, env, stdio: ['pipe', 'pipe', 'pipe'] });
   const seen = [];
   let buf = '';
@@ -183,7 +181,7 @@ function startSidekick(home) {
 
   // Computer control: "Allow File Edits & Commands" from the menu is saved, and the hands helper runs only with it on.
   sk.send({ type: 'set_actions', on: true });
-  const cfgPath = path.join(home, 'data', 'Jarvis', 'Data', 'settings.json');
+  const cfgPath = path.join(home, 'data', 'Yomna', 'Data', 'settings.json');
   for (let i = 0; i < 100 && !(fs.existsSync(cfgPath) && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).allowActions === true); i++) await new Promise((r) => setTimeout(r, 50));
   assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).allowActions, true, 'CP-14 allowActions saved');
   assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).voiceMode, 'live', 'CP-14 voiceMode saved');
@@ -191,7 +189,7 @@ function startSidekick(home) {
   console.log('CP-14 voice config ok');
 }
 
-if (['darwin', 'win32'].includes(process.platform)) {
+if (['darwin', 'win32', 'linux'].includes(process.platform)) {
   let allow = true;
   const { tools } = createTools({ ...base, allowActions: () => allow });
   const act = tools.find((t) => t.name === 'act_in_app');

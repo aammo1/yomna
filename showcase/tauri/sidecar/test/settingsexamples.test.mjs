@@ -17,7 +17,7 @@ const body = side.slice(start + 'const DEFAULTS = {'.length, side.indexOf('\n};'
   .replace(/\{[^{}]*\}/g, '{}')
   .replace(/'[^'\n]*'/g, "''");
 const DEFAULT_KEYS = new Set([...body.matchAll(/(\w+)\s*:/g)].map((m) => m[1]));
-for (const k of ['provider', 'voiceMode', 'liveModel', 'liveVoice', 'allowActions', 'secondBrain', 'tts']) assert.ok(DEFAULT_KEYS.has(k), `the DEFAULTS reader finds ${k}`);
+for (const k of ['harness', 'voiceMode', 'liveModel', 'liveVoice', 'allowActions', 'secondBrain', 'tts']) assert.ok(DEFAULT_KEYS.has(k), `the DEFAULTS reader finds ${k}`);
 assert.ok(!DEFAULT_KEYS.has('code'), 'nested keys are not top-level ones');
 
 const example = (name) => JSON.parse(src(`../../../../docs/${name}`));
@@ -33,7 +33,7 @@ for (const [name, c] of [['classic', classic], ['live', live]]) {
 
 assert.equal(voiceModeOf(classic), 'classic');
 assert.equal(voiceModeOf(live), 'live');
-assert.equal(live.liveModel, 'gemini-3.8-live');
+assert.equal(live.liveModel, 'gemini-2.5-flash-native-audio-preview-09-2025');
 assert.equal(live.liveVoice, 'Charon');
 
 // The README points to both.

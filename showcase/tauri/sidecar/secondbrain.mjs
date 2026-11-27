@@ -4,7 +4,7 @@
 // choice and is never replaced. Relative file paths in the chat's file tools resolve against root, its skills
 // (<agents>/skills/<name>/SKILL.md) show beside the user's own (skills.mjs), raw is read-only (safety.mjs), and its
 // rules (root's AGENTS.md, or CLAUDE.md) ride in the system prompt, capped so small local models still fit.
-// Jarvis' own data stays in ~/Jarvis.
+// Yomna's own data stays in ~/Yomna.
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -353,7 +353,7 @@ export function secondBrainBlock(b, { max = RULES_MAX } = {}) {
     raw ? `Never write, move or delete anything in ${rawName} (unedited evidence): the file tools and commands refuse it.` : '',
   ].filter(Boolean).join(' ');
   return `
-Second brain: ${dir} is the user's second brain, the folder of their notes and memory you work from. File paths without a full path (read_file, list_files, search_files, write_file) resolve against it, and shell commands (run_command) start in it too; Jarvis's own files are in ~/Jarvis, so give that full path.${guide ? ` ${guide}` : ''}${map}${text ? `
+Second brain: ${dir} is the user's second brain, the folder of their notes and memory you work from. File paths without a full path (read_file, list_files, search_files, write_file) resolve against it, and shell commands (run_command) start in it too; Yomna's own files are in ~/Yomna, so give that full path.${guide ? ` ${guide}` : ''}${map}${text ? `
 Its own rules, from ${rules.file} (the user wrote these for agents working in this folder; follow them where they fit what you can do):
 <second-brain-rules>
 ${text}

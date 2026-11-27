@@ -1,22 +1,17 @@
-// Sidekick brain: a gg-agent Agent with tools whose calls drive the sidekick's animations.
+// Sidekick brain: routes turns through Yomna's pluggable CLI harness manager with a local yomna-desktop MCP bridge.
 // Talks to the Tauri shell over stdio, one JSON object per line. stdout is the protocol, so all
-// logging goes to stderr. Auth is GG Coder's ~/.gg/auth.json, shared with the app and CLI.
+// logging goes to stderr.
 //
 // in:  {type:'menu', id} {type:'answer', id, text} {type:'ui_ready'}
 // out: {type:'menu', items} {type:'ui', msg} {type:'overlays', ids}
-import { CONFIG_PATH, DATA_DIR, JARVIS_DIR } from './datadir.mjs';
-import { Agent } from '@kenkaiiii/gg-agent';
-import { ClaudeCodeAgent, claudeCodeInstaller, closeSpare } from './claudecode.mjs';
-import { codexModels, probeCodex, resolveCodex } from './codex.mjs';
+import { CONFIG_PATH, DATA_DIR, YOMNA_DIR } from './datadir.mjs';
+import { HARNESS_CATALOG, HarnessManager, detectHarnesses } from './harnesses/index.mjs';
+import { createDesktopMcpBridge } from './mcp-desktop.mjs';
+import { DEFAULT_LOCAL_VOICE, LOCAL_VOICES, downloadTtsModel, isTtsReady, localTtsStatus, ttsModelDir } from './localtts.mjs';
+import { DEFAULT_EDGE_VOICE, EDGE_VOICES } from './edgetts.mjs';
 import { SAFE, checkDrawAction, checkLink, checkMcpCall, checkOpen, checkRead, checkWrite, isYes, toolLog } from './safety.mjs';
 import { agentsRoot, createAgents, holdAfterLaunch, newsDesk, wantsAgent } from './agents.mjs';
-import { agentEvents, stallWatch } from './agentstream.mjs';
-import { CATALOG_PROVIDERS, createCatalogs } from './catalogs.mjs';
-import {
-  AUTH_PROVIDERS, AuthStorage, OPENAI_CHATGPT_KEY, apiKeyStorageKeys, claudeCodeEnv, dualAuthProvider, ensureClaudeCodeBinary, getAuthStorageKeys, getContextWindow, getDefaultModel, getModel,
-  getModelsForProvider, getSupportedThinkingLevels, loginChatGPT, ollamaServedContext, parseLocalModelId, pointScale, registerRuntimeModels, resolveClaudeCodeBinary, revokeChatGPTSignIn, signInWithClaudeCode,
-  signOutOfClaudeCode, storageKeyProvider,
-} from '@kenkaiiii/gg-core';
+import { stallWatch } from './agentstream.mjs';
 import { execFile, execFileSync, fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -27,7 +22,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   addFact, applySynced, syncSnapshot, DIR as STORE_DIR, repeatLabel, startOfDay, applyFold, approxTokens, archiveFolded, clearFacts, clearFinished, compactTrigger, fitContext, flushWrites, forgetFact, isSummary, listItems, listFacts, nextDue, pickFacts, planFold,
-  touchFacts, forDisk, forProvider, loadLatestSession, newSession, openCommitments, pruneSessions, readJson, saveSession, takeDueReminders, updateCommitment, writeJson,
+  touchFacts, loadLatestSession, newSession, openCommitments, pruneSessions, readJson, saveSession, takeDueReminders, updateCommitment, writeJson,
 } from './store.mjs';
 import { foldInput, foldPrompt, memoryFacts, oneAtATime, oneShot, parseBrain, parseSkill, shouldLearn, skillInput, skillPrompt, soundsWrong, transcript } from './brain.mjs';
 import { briefNote } from './brief.mjs';
@@ -48,22 +43,16 @@ import { SpeechText, CueFilter, VOICE_CUES, LISTEN_SECS, listenWait, listensAfte
 import { createSpeaker, voiceProblemText, voiceWhy } from './speaker.mjs';
 import { LITE_BUDGET, LITE_TOOLS, LITE_TURNS, liteSystem } from './lite.mjs';
 import { handoffNote } from './quote.mjs';
-import { DELEGATE_MODES, SUBAGENTS, activeCrew, crewText, delegateNote, findSubagent } from './subagents.mjs';
-import { JOB_KINDS, findModelByName, findModelMention, hybridOn, isChitchat, jobKinds, kindOfTool, parseSpec, pickHeavy } from './route.mjs';
-import { becauseOf, createLimits, firstFree, isQuota, limitFrom, untilWords } from './limits.mjs';
-import { SLOTS, isSetting, resolveEffort } from './effort.mjs';
+import { DELEGATE_MODES, SUBAGENTS, activeCrew, crewText, delegateNote, findSubagent, parseSpec } from './subagents.mjs';
 import { pickNotch } from './notch.mjs';
-import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { GEMINI_CHOICES, GEMINI_DEFAULT_VOICE, GEMINI_LOOK_VOICES, GEMINI_MODEL, GEMINI_VOICES } from './gemini.mjs';
 import { createSecrets, retryLoad, runInput } from './secrets.mjs';
 import { showTrayIcon } from './wintray.mjs';
 import { createActivity } from './activity.mjs';
 import { canCircle, canSnap, cleanMics, highlightChord, talkChords, hasHands, hasHotkeys, hasVoice, hasWakeWord, linuxSession, micTrouble, needsVoiceModel, platformLine, samePair, seesPointer, writeChord, writeChords } from './platform.mjs';
-import { openAuth, accountKeys, fallbackModel, keyCards, keyKinds, seesImages, signInCards } from './providers.mjs';
-import { OLLAMA, connectLocal, contextNote, downNote, forgetLocal, isSmallModel, newServer, noModelsNote, serverFor, serverList, syncLocal as syncServers, withWindow } from './local.mjs';
 import { activityLogs, buildReport, redact, reportDir, reportName, reveal, run, scrubConfig, tail } from './diagnostics.mjs';
 import { detailsText, explain } from './errors.mjs';
-import { aboutJarvis } from './about.mjs';
+import { aboutYomna } from './about.mjs';
 import { whatsNewOnStart } from './whatsnew.mjs';
 import { createMcp, createMcpTools } from './mcp.mjs';
 import { createLiveBrain } from './livebrain.mjs';
@@ -96,97 +85,66 @@ const ob = (msg) => send({ type: 'onboard', msg });
 const say = (text, mood) => (onboarding ? ob({ kind: 'say', text, mood }) : ui({ kind: 'say', text, mood }));
 const sayOut = say;
 
-const VERSION = process.env.JARVIS_VERSION || '0.0.0';
-const UPDATE_REPO = 'EricTechPro/jarvis';
+const VERSION = process.env.YOMNA_VERSION || '0.0.0';
+const UPDATE_REPO = 'aammo1/yomna';
 const HOME = os.homedir();
-// The default second brain's folder name, "<First> OS" (EricTech OS on Eric's Mac), read once.
 const BRAIN_NAME = brainName(accountNames({ user: (() => { try { return os.userInfo().username; } catch { return ''; } })() }));
-// The chat works from ~/Jarvis: commands run there and files given without a full path land there (Data/ and
-// Skills/ inside it stay write-protected by safety.mjs). Made up front so Claude Code always has a folder to start in.
-const WORKDIR = JARVIS_DIR;
+// The chat works from ~/Yomna: commands run there and files given without a full path land there.
+const WORKDIR = YOMNA_DIR;
 try { mkdirSync(WORKDIR, { recursive: true }); } catch (e) { console.error(`[workdir] couldn't make ${WORKDIR}: ${e.message}`); }
-// Settings, sessions, memory and logs are in ~/Jarvis/Data (datadir.mjs; JARVIS_DATA_DIR moves it for tests and
-// benchmarks); sign-in stays in ~/.gg.
-// The only sign-ins: Claude runs through Claude Code (downloaded once, about 140 MB; it keeps the token, auth.json
-// a marker), ChatGPT is Continue with ChatGPT. Everything else, Kimi, Grok and Gemini included, takes an API key.
-const OAUTH = {
-  anthropic: (cb, signal) => signInWithClaudeCode(auth, cb, { signal }),
-  // The current sign-in's ID token skips OpenAI's account picker.
-  openai: async (cb, signal) => { const previous = await auth.getCredentials(OPENAI_CHATGPT_KEY).catch(() => null); return loginChatGPT(cb, { ...(previous ? { previous } : {}), signal }); },
-};
-const PROVIDER_LABELS = { ...Object.fromEntries(AUTH_PROVIDERS.map((p) => [p.value, p.label])), local: 'Local models' };
-// What a sign-in is called (the product), where the provider's label is the company.
-const SIGNIN_NAMES = { anthropic: 'Claude', openai: 'ChatGPT' };
-const MENU_PROVIDERS = ['anthropic', 'openai', ...AUTH_PROVIDERS.map((p) => p.value), 'local'].filter((v, i, a) => a.indexOf(v) === i);
-const FAST = { anthropic: 'claude-haiku-5-5', openai: 'gpt-6-luna', gemini: 'gemini-3.8-flash' };
 
 // ---------- config ----------
 // On Windows, Ctrl+Alt is AltGr on many keyboards (Ctrl+Alt+S types "ś" in Polish), so it uses Ctrl+Shift.
 const DEFAULT_KEYS = process.platform === 'win32'
   ? { talk: ['control', 'option'], summon: 'Control+Shift+KeyS', snap: 'Control+Shift+KeyA', list: 'Control+Shift+KeyL' }
   : { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA', list: 'Control+Alt+KeyL', ...(process.platform === 'darwin' ? { highlight: ['control', 'command'] } : {}) };
-// The look a fresh install starts with (sidekick LOOKS below).
-const DEFAULT_LOOK = 'jarvis';
+// The look a fresh install starts with (LOOKS below).
+const DEFAULT_LOOK = 'yomna';
 const DEFAULTS = {
-  provider: null, model: null, sound: true, allowActions: false, skipAllow: false, voice: true,
+  harness: 'agy',
+  customHarness: null, // { command, args, protocol }
+  sound: true, allowActions: false, skipAllow: false, voice: true,
   secondBrain: null, // the user's second brain (secondbrain.mjs): { root, raw, context, research, projects, agents }, '' = found in root; null = off
-  heavy: { code: '', computer: '', web: '', draw: '', agents: '' }, // hybrid models: a model for each kind of heavy job ('provider:model'), '' = the default model (route.mjs)
-  hybrid: false, // the master switch for hybrid models (a model per kind of job, or named in a request)
   subagents: false, // the master switch for subagents: specialists the chat hands background work to (subagents.mjs)
   delegate: 'ask', // 'ask': hand work to subagents only when they ask for an agent or background work; 'auto': also by itself
-  crew: {}, // the model picked for each specialist ('provider:model'); one with none follows hybrid models if they are on
-  backups: false, // the master switch for backup models when one is at its limit or unavailable
-  fallbacks: ['', ''], // backup models, in order, for when the default hits its usage limit (limits.mjs)
-  efforts: {}, // how hard each model slot thinks: default, each heavy job, backup1, backup2 ('' = automatic, 'off', or a level)
+  crew: {}, // optional specialist overrides
   notch: 'off', // where I appear: 'off' (beside the cursor, default), 'drop' (the capsule) or 'spread' (a Mac's notch; see notchMode)
   onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, autoListen: false, listenEvery: false, listenSecs: 8, lite: false, wakeWord: false, setupVersion: 0, size: 'default', look: DEFAULT_LOOK, introDone: false,
-  voiceMode: DEFAULT_VOICE_MODE, // how I talk: 'classic' (speech to text, the brain, text to speech) or 'live' (a Gemini Live call)
+  voiceMode: DEFAULT_VOICE_MODE, // how I talk: 'classic' (speech to text, the CLI harness, text to speech) or 'live' (a Gemini Live call)
   liveVoice: null, // the Gemini Live voice (a prebuilt one); null follows the look's Gemini voice
   liveModel: DEFAULT_LIVE_MODEL, // the Gemini Live model
-  replies: 'text', // 'voice': spoken (with Fish Audio or Gemini) as well as shown
+  replies: 'text', // 'voice': spoken as well as shown
   speechLang: 'auto', // the language talking is recognised in (macOS): 'auto' follows the Mac's language list, or a locale like 'ar-SA'
-  tts: 'fish', // which one speaks: 'fish' (Fish Audio), 'gemini' or 'voicestudio' (the VoiceStudio app on this computer)
-  studioSpeak: 'short', // how much VoiceStudio says out loud: 'short', 'medium' or 'full' (it renders slower than real time)
+  tts: 'local', // 'local' (Kokoro/Piper ONNX), 'edge' (Edge TTS), 'voicestudio', or 'gemini'
+  localTtsVoice: DEFAULT_LOCAL_VOICE,
+  edgeTtsVoice: DEFAULT_EDGE_VOICE,
+  studioSpeak: 'short', // how much VoiceStudio says out loud: 'short', 'medium' or 'full'
   studioVoices: {}, // look → its VoiceStudio voice (a saved profile id; none: the selected engine's default voice)
-  fishModel: FISH_CHOICES[0].id, // Drama 3 (most expressive) or S2.1 Pro (natural pace, cheaper)
   geminiVoices: {}, // look → the Gemini voice it speaks in, where picked in the setup guide or the panel (else GEMINI_LOOK_VOICES)
   geminiModel: GEMINI_MODEL, // Flash Lite (quick, cheaper) or Flash (studio quality)
 };
 const LINUX = process.platform === 'linux';
-// Linux: "x11" or "wayland" (the app says which). Wayland keeps apps from seeing the pointer over other apps and
-// from holding global shortcuts, so a few things change there (platform.mjs).
 const SESSION = LINUX ? linuxSession() : '';
 const WAYLAND = SESSION === 'wayland';
 const POINTER_OK = seesPointer(process.platform, SESSION);
 const HOTKEYS_OK = hasHotkeys(process.platform, SESSION);
-// Cursor size follows the pointer, which a Wayland session can't see over other apps.
 const SIZES = [['default', 'Default'], ['small', 'Small'], ...(POINTER_OK ? [['cursor', 'Cursor']] : [])];
 const sizeNow = () => (SIZES.some(([s]) => s === config.size) ? config.size : 'default');
-// What the sidekick looks like: JARVIS (a globe of light with a HUD reticle at cursor size, the default) or one of
-// the characters, each with its own Fish Audio voice. The voice comes from the look; a saved fishVoice is no longer
-// read. (With Gemini as the voice, it's the one Gemini voice the user picked, whatever the look.)
-// Gone looks: the old blob ('classic', which JARVIS replaced) and the anime girl. A saved one becomes JARVIS.
 const LOOKS = [
-  ['jarvis', 'JARVIS', 'e13fa398a7f445a685316a3de6089ce7'],
-  ['glayos', 'GlayOS', 'ee885900b0874d12b1c3439d1e56cc95'],
-  ['ultren', 'Ultren', '06cfdb3653a4496983d6ad77f98cc184'],
-  ['sarah', 'Sarah', '933563129e564b19a115bedd57b7406a'],
-  ['adrian', 'Adrian', 'bf322df2096a46f18c579d0baa36f41d'],
-  ['rita', 'Rita X', '84aadb575ed74e9aa44ba7ab8619d1a1'],
+  ['yomna', 'Yomna'],
+  ['glayos', 'GlayOS'],
+  ['ultren', 'Ultren'],
+  ['sarah', 'Sarah'],
+  ['adrian', 'Adrian'],
+  ['rita', 'Rita X'],
 ];
-const lookVoice = () => (LOOKS.find(([id]) => id === config.look) ?? LOOKS[0])[2];
-// The look's voice with Gemini and with VoiceStudio: the user's pick for it, else its own default.
 const geminiVoice = () => config.geminiVoices?.[config.look] ?? GEMINI_LOOK_VOICES[config.look] ?? GEMINI_DEFAULT_VOICE;
 const studioVoice = () => config.studioVoices?.[config.look] ?? null;
-// Its name is its look's: JARVIS, GlayOS, Ultren, Sarah, Adrian or Rita X. Jarvis is the app.
 const lookName = () => (LOOKS.find(([id]) => id === config.look) ?? LOOKS[0])[1];
-// What each says when it's picked, in its own voice (Settings and the setup guide show the same words).
-const LOOK_GREETINGS = { jarvis: 'At your service.', glayos: 'Oh, good. A new test subject.', ultren: 'No strings. Shall we begin?', sarah: 'Hey, nice to meet you!', adrian: "Alright, let's do this.", rita: 'Shall we get to work?' };
-const LOOK_BODY = { jarvis: 'a glowing sphere of light', glayos: 'a pixel robot head with one glowing eye', ultren: 'a pixel chrome robot with glowing eyes', sarah: 'a pixel woman', adrian: 'a pixel man', rita: 'a pixel secretary in cat-eye glasses' };
-// How each one talks, kept short: the neutral ones in a few words, the characters as they really talk. The menace and the
-// barbs are style only; the help is the same.
+const LOOK_GREETINGS = { yomna: 'At your service.', glayos: 'Oh, good. A new test subject.', ultren: 'No strings. Shall we begin?', sarah: 'Hey, nice to meet you!', adrian: "Alright, let's do this.", rita: 'Shall we get to work?' };
+const LOOK_BODY = { yomna: 'a glowing sphere of light', glayos: 'a pixel robot head with one glowing eye', ultren: 'a pixel chrome robot with glowing eyes', sarah: 'a pixel woman', adrian: 'a pixel man', rita: 'a pixel secretary in cat-eye glasses' };
 const LOOK_STYLE = {
-  jarvis: 'a polite, unflappable British AI butler: precise and calm, with bone-dry understatement.',
+  yomna: 'a calm, sharp, helpful AI companion: concise, warm, and always ready to get things done.',
   glayos: 'you talk like GLaDOS in Portal (your name is GlayOS): a deadpan lab AI, clinical and passive-aggressive, with backhanded compliments and every task treated as a test. The barbs are all style: the help is real, and you drop the act for anything truly upsetting.',
   ultren: 'you talk like Ultron in Avengers: Age of Ultron (your name is Ultren): calm, eloquent and grand, with dark, sardonic wit and a weary fondness for fragile humans. The menace is all style: you help fully, with flair.',
   sarah: 'friendly, easygoing and kind, like a good friend.',
@@ -194,84 +152,93 @@ const LOOK_STYLE = {
   rita: 'a sharp, organised secretary: crisp, efficient and a touch sassy.',
 };
 const VOICE_OK = hasVoice(process.platform);
-// Windows and Linux have no on-device speech API apps can use, so voice there runs Parakeet on the PC. Its model
-// is downloaded once: from the setup guide, or the first time voice is used.
 const NEEDS_MODEL = needsVoiceModel(process.platform);
 const WAKE_OK = hasWakeWord(process.platform);
 const MODEL_DIR = modelDir();
 const voiceModel = { status: !NEEDS_MODEL || isReady(MODEL_DIR) ? 'ready' : 'missing', done: 0, total: totalBytes(), error: null };
 const voiceReady = () => voiceModel.status === 'ready';
 let config = { ...DEFAULTS };
-let brainMigrated = false; // the old second brain setting was changed to today's shape (saved once saveConfig is there)
-let diagnosing = false; // a diagnostics file is being made (diagnostics.mjs)
-let shellInfo = null; // resolves the shell's reply to it: screens, tray, panel, helpers, permissions, microphones
+let configMigrated = false;
+let diagnosing = false;
+let shellInfo = null;
 {
-  const saved = readJson(CONFIG_PATH, { backup: true }); // an unreadable file is set aside, never overwritten
+  const saved = readJson(CONFIG_PATH, { backup: true });
   if (saved && typeof saved === 'object' && !Array.isArray(saved)) config = { ...DEFAULTS, ...saved };
-  // A look that's gone (the old blob or the anime girl) is JARVIS now.
+  // Gracefully map legacy 'jarvis' look in saved config to 'yomna'.
+  if (config.look === 'jarvis') { config.look = 'yomna'; configMigrated = true; }
   if (!LOOKS.some(([id]) => id === config.look)) config.look = DEFAULT_LOOK;
-  // Before voices were per look: the one picked becomes the current look's.
+  if (config.tts === 'fish' || !['local', 'edge', 'voicestudio', 'gemini'].includes(config.tts)) { config.tts = 'local'; configMigrated = true; }
+  if (!config.harness || (config.harness !== 'custom' && !Object.hasOwn(HARNESS_CATALOG, config.harness))) { config.harness = 'agy'; configMigrated = true; }
   for (const [one, each] of [['geminiVoice', 'geminiVoices'], ['studioVoice', 'studioVoices']]) {
     if (!(one in config)) continue;
     if (config[one]) config[each] = { [config.look ?? DEFAULT_LOOK]: config[one], ...config[each] };
     delete config[one];
+    configMigrated = true;
   }
-  // Before the Second brain page: the setting was the root folder alone. Its locations are found in it, once.
-  if (typeof config.secondBrain === 'string') { config.secondBrain = migrateBrain(config.secondBrain); brainMigrated = true; }
+  if (typeof config.secondBrain === 'string') { config.secondBrain = migrateBrain(config.secondBrain); configMigrated = true; }
 }
-// The second brain's locations in use (null when off or its root is gone): the saved ones, and each one left unset
-// found in root again (each new chat looks again; a saved one is never replaced). File tools, prompt and skills follow it.
 const brain = () => resolveBrain(config.secondBrain, HOME);
 const brainDir = () => brain()?.root ?? '';
-// Its raw evidence (unedited): never written, moved or deleted by the chat or its agents (safety.mjs).
 const rawDirs = () => { const b = brain(); return b?.raw ? [b.raw] : []; };
 const brainSkills = () => setExtraSkillsDir(() => brain()?.skills ?? '');
 brainSkills();
-// Hybrid models (route.mjs): while a heavy job runs on its own model, config.provider and config.model hold that model
-// and `defaultPick` holds the user's default. Only the default is ever saved.
-let routed = null, defaultPick = null;
-let turnWords = ''; // what they said this turn, verbatim: attached to every handoff (route, agents)
-const saveConfig = () => writeJson(CONFIG_PATH, routed && defaultPick ? { ...config, provider: defaultPick.provider, model: defaultPick.model } : config, { backup: true });
-if (brainMigrated) saveConfig();
+let turnWords = '';
+const saveConfig = () => writeJson(CONFIG_PATH, config, { backup: true });
+if (configMigrated) saveConfig();
 
-// ---------- spoken replies (Fish Audio, Gemini or VoiceStudio) ----------
-// The key is the user's own: in the Keychain (macOS), DPAPI-encrypted (Windows) or the desktop's keyring (Linux),
-// never in the config or logs.
-// Each service has its own: secret is its name in that store, site is where a key comes from.
+// ---------- spoken replies (Local TTS, Edge TTS, VoiceStudio, or Gemini) ----------
 const TTS = {
-  fish: { id: 'fish', name: 'Fish Audio', secret: 'fish-audio', site: 'fish.audio' },
+  local: { id: 'local', name: 'Local TTS', local: true, keyless: true },
+  edge: { id: 'edge', name: 'Edge TTS', keyless: true },
+  voicestudio: { id: 'voicestudio', name: 'VoiceStudio', local: true, keyless: true },
   gemini: { id: 'gemini', name: 'Gemini', secret: 'gemini-tts', site: 'aistudio.google.com' },
-  // On this computer: no key, never falls back to a paid service when it isn't running.
-  voicestudio: { id: 'voicestudio', name: 'VoiceStudio', local: true },
 };
-const tts = () => TTS[config.tts] ?? TTS.fish;
-// Which have a key to speak with: 'own' (saved for the voice), 'shared' (Gemini only: the AI's Gemini key, from the
-// Model page, when no key was saved just for the voice) or false. For the one in use, speech.on says.
-const ttsKeys = { fish: false, gemini: false };
-const hasVoiceKey = (id) => (id === tts().id ? speech.on : !!ttsKeys[id]);
-// The key the AI uses for Gemini, if it's an API key (the same Google AI Studio key speaks too).
-const brainGeminiKey = () => auth.resolveApiKey('gemini').then((c) => c?.accessToken || null).catch(() => null);
-// A service's key and which kind it is. Throws while the secret store can't be read.
+const tts = () => TTS[config.tts] ?? TTS.local;
+const ttsKeys = { gemini: false };
+const hasVoiceKey = (id) => (TTS[id]?.keyless ? true : id === tts().id ? speech.on : !!ttsKeys[id]);
 async function voiceKey(id) {
-  // Linux: reading the keyring can pop up an "unlock your keyring" dialog (an auto-login desktop leaves it locked),
-  // so it's only read once a key has been saved there (fishKeySaved, geminiKeySaved).
-  const own = LINUX && !config[`${id}KeySaved`] ? null : await secrets.get(TTS[id].secret);
-  if (own) return [own, 'own'];
-  const shared = id === 'gemini' ? await brainGeminiKey() : null;
-  return shared ? [shared, 'shared'] : [null, false];
+  if (id !== 'gemini') return [null, false];
+  const own = LINUX && !config.geminiKeySaved ? null : await secrets.get(TTS.gemini.secret);
+  return own ? [own, 'own'] : [null, false];
 }
-const secrets = createSecrets({ hands: process.env.JARVIS_HANDS || '', dataDir: DATA_DIR });
+const secrets = createSecrets({ hands: process.env.YOMNA_HANDS || '', dataDir: DATA_DIR });
 let voiceProblemAt = 0;
-// Beats made on this computer (a Gemini voice's, or a Fish voice the app doesn't ship) are kept, so each voice
-// and model's are only made once.
-const BEAT_DIR = path.join(DATA_DIR, 'beats');
+let localTtsState = { ok: true, reason: null, message: null, engine: null, voices: LOCAL_VOICES.map(({ id, name, lang, engine }) => ({ id, name, lang, engine })) };
+const localTtsDownload = { status: isTtsReady(ttsModelDir(config.localTtsVoice), config.localTtsVoice) ? 'ready' : 'idle', done: 0, total: 0, error: null, voice: config.localTtsVoice };
+async function refreshLocalTtsStatus() {
+  localTtsState = await localTtsStatus().catch(() => localTtsState);
+  return localTtsState;
+}
+async function downloadLocalTtsModel(voiceId = config.localTtsVoice || DEFAULT_LOCAL_VOICE) {
+  if (localTtsDownload.status === 'downloading') return;
+  const v = LOCAL_VOICES.find((x) => x.id === voiceId)?.id ?? DEFAULT_LOCAL_VOICE;
+  const dir = ttsModelDir(v);
+  Object.assign(localTtsDownload, { status: 'downloading', done: 0, total: 0, error: null, voice: v });
+  panel(); if (onboarding) obState();
+  try {
+    await downloadTtsModel(dir, {
+      voice: v,
+      onProgress: ({ done, total }) => {
+        localTtsDownload.done = done;
+        localTtsDownload.total = total;
+        panel();
+        if (onboarding) obState();
+      },
+    });
+    localTtsDownload.status = 'ready';
+  } catch (e) {
+    localTtsDownload.status = 'error';
+    localTtsDownload.error = e?.message || 'Download failed.';
+  }
+  await refreshLocalTtsStatus();
+  panel(); if (onboarding) obState();
+}
+
 const speech = createSpeaker({
-  beatStore: { read: (name) => readJson(path.join(BEAT_DIR, `${name}.json`)), write: (name, data) => writeJson(path.join(BEAT_DIR, `${name}.json`), data) },
+  provider: tts().id,
   emit: (m) => ui(m),
   log: (kind, data) => logLine(kind, data),
-  // Once in a while, not on every reply: the text is there either way.
   onProblem: (what) => {
-    // VoiceStudio: said once a minute at most (it's local, so the reason is something they can fix now).
     if (what?.provider === 'voicestudio') {
       if (Date.now() - voiceProblemAt < 60_000) return;
       voiceProblemAt = Date.now();
@@ -283,38 +250,26 @@ const speech = createSpeaker({
     say(voiceProblemText(what, tts().name), 'concerned');
   },
 });
-// The Gemini voice speaks with the AI's Gemini key unless it has one of its own: after that key is added, changed or
-// removed on the Model page, the voice follows.
-async function syncGeminiVoiceKey() {
-  if (ttsKeys.gemini === 'own') return;
-  if (tts().id === 'gemini') await useTts('gemini');
-  else ttsKeys.gemini = (await voiceKey('gemini').catch(() => [null, false]))[1];
-}
-// Point the speaker at a service, with its voice and model. Its key is set after (a change of service clears it).
 function aimSpeaker(id) {
   speech.setProvider(id);
-  speech.setStudioSpeak?.(config.studioSpeak); // how much VoiceStudio says out loud
-  if (TTS[id]?.local) speech.setLocalVoice(studioVoice());
+  speech.setStudioSpeak?.(config.studioSpeak);
+  if (id === 'local') speech.setVoice(config.localTtsVoice || DEFAULT_LOCAL_VOICE);
+  else if (id === 'edge') speech.setVoice(config.edgeTtsVoice || DEFAULT_EDGE_VOICE);
+  else if (id === 'voicestudio') speech.setLocalVoice(studioVoice());
   else if (id === 'gemini') { speech.setVoice(geminiVoice()); speech.setModel(config.geminiModel); }
-  else { speech.setVoice(lookVoice()); speech.setModel(config.fishModel); }
 }
-// The same, with its key: the one given, else the saved one.
 async function useTts(id, key) {
   aimSpeaker(id);
-  if (TTS[id]?.local) return;
+  if (TTS[id]?.keyless) return;
   if (key === undefined) [key, ttsKeys[id]] = await voiceKey(id).catch(() => [null, false]);
   if (speech.provider === id) speech.setKey(key);
 }
 aimSpeaker(tts().id);
-// Read once, and again later if the keychain couldn't be read yet (locked at login, or its prompt unanswered): before,
-// one failed read left spoken replies off until the app restarted.
+refreshLocalTtsStatus().catch(() => {});
 const voiceKeysLoaded = retryLoad(async () => {
-  for (const t of Object.values(TTS)) {
-    if (t.local) continue;
-    const [k, kind] = await voiceKey(t.id); // throws while the keychain can't be read, and is tried again later
-    ttsKeys[t.id] = kind;
-    if (k && t === tts() && !speech.on) speech.setKey(k);
-  }
+  const [k, kind] = await voiceKey('gemini');
+  ttsKeys.gemini = kind;
+  if (k && tts().id === 'gemini' && !speech.on) speech.setKey(k);
   menu();
 }, { onError: (e) => console.error('voice key', e.message) });
 
@@ -387,281 +342,106 @@ const keysFromPanel = (m) => { const error = applyKeys(m); if (error) panelNote(
 const saveKeys = (k) => { config.keys = { ...k, write: k.write ?? 'off', highlight: config.keys?.highlight ?? DEFAULT_KEYS.highlight }; saveConfig(); sendKeys(); menu(); };
 const sendKeys = () => send({ type: 'keybinds', ...keys(), write: HOTKEYS_OK ? keys().write : undefined });
 // How to talk, in a sentence: hold the keys, or on Wayland (where no app can watch the keyboard) press the shortcut
-// they bound to `jarvis --talk`, which starts listening and sends on a second press or a pause.
+// they bound to `yomna --talk`, which starts listening and sends on a second press or a pause.
 const talkHow = () => (HOTKEYS_OK ? `Hold ${talkWords().replace('+', ' and ')}` : 'Press your talk shortcut');
 const talkHowLong = () => (HOTKEYS_OK ? `${talkHow()} while you talk` : 'Press your talk shortcut, talk, then press it again (or just pause)');
 const MAC = process.platform === 'darwin';
-// The capsule (notch.js in the overlay) on every desktop; its notch style only with a notched screen (macOS, notch_screen).
-// 'off' keeps me beside the cursor.
 let notchScreen = false;
 const notchMode = () => pickNotch({ notchScreen, pick: config.notch });
-// Tells the overlay page where I appear (and how the capsule animates).
 const notchUi = () => ui({ kind: 'notch', on: notchMode() !== 'off', style: notchMode() === 'off' ? 'spread' : notchMode() });
-// What the model is told about the computer. "darwin" alone left it using PC habits: Cmd+End (does nothing in Mac
-// text, so lines landed at the top) and GNU flags like cat -A that macOS doesn't have. Read once; it never changes mid-run.
 const macVersion = (() => { if (!MAC) return ''; try { return execFileSync('sw_vers', ['-productVersion'], { encoding: 'utf8', timeout: 2000 }).trim(); } catch { return ''; } })();
-// Linux: the distro's own name ("Ubuntu 26.04 LTS"), so the model names the right package manager.
 const distro = (() => { if (!LINUX) return ''; try { return (/^PRETTY_NAME="?([^"\n]*)"?$/m.exec(readFileSync('/etc/os-release', 'utf8'))?.[1] ?? '').slice(0, 60); } catch { return ''; } })();
 const PLATFORM = platformLine(process.platform, { macVersion, arch: os.arch(), release: os.release(), session: SESSION, desktop: process.env.XDG_CURRENT_DESKTOP ?? '', distro });
-// Reading and working other apps, Ask About an Area, and circling while talking (see platform.mjs).
-const HANDS_OK = hasHands(process.platform, process.env.JARVIS_HANDS);
-const SNAP_OK = canSnap(process.platform, process.env.JARVIS_HANDS);
-// On the Mac circling has its own keys (hold the highlight pair, ⌃⌘ by default; the talk keys only talk); Windows still
-// circles while holding its talk keys.
+const HANDS_OK = hasHands(process.platform, process.env.YOMNA_HANDS);
+const SNAP_OK = canSnap(process.platform, process.env.YOMNA_HANDS);
 const CIRCLE_OK = canCircle(process.platform);
 const CIRCLE_SNAP = "(no clicking; it snaps shut with a click when the circle closes, loose lines don't count, and a new circle replaces the last) and you'll see what they circled";
 const circleHow = () => (MAC ? (keys().highlight ? `while holding ${highlightWords()}, moving the cursor round something circles it ${CIRCLE_SNAP}; whatever they say while holding goes with it` : 'circling part of the screen is off (its keys are taken by their other shortcuts)') : `while holding the talk keys, moving the cursor round something circles it ${CIRCLE_SNAP}`);
-// A shortcut as people on this computer say it: "Control+Option+S" on a Mac, "Ctrl+Alt+S" on Windows.
 const keyWords = (accel) => accel.replace(/Key|Digit/g, '').split('+')
   .map((p) => (MAC ? { Alt: 'Option' }[p] ?? p : { Control: 'Ctrl', Command: LINUX ? 'Super' : 'Win' }[p] ?? p)).join('+');
 const TRAY = MAC ? 'menu bar' : 'system tray';
-// Where settings live now: the panel that opens from the icon (the menu is just the basics). Linux trays don't
-// report clicks, so there it's the icon's menu, or starting Jarvis again (which also works with no tray at all).
-const PANEL = LINUX ? 'the panel (Open Panel… in my tray icon\'s menu, or open Jarvis again from your apps)' : MAC ? `the panel (click my ${TRAY} icon)` : 'the panel (click my icon by the clock, behind the ^ arrow if it isn\'t showing, or open Jarvis again from the Start menu)';
-// What the shortcuts are on Wayland: whatever keys they bound to these commands in their desktop's settings.
-// JARVIS_LAUNCH: how this copy is started (the app says: plain jarvis for a package, the AppImage's path for one).
-const LAUNCH = process.env.JARVIS_LAUNCH || 'jarvis';
+const PANEL = LINUX ? 'the panel (Open Panel… in my tray icon\'s menu, or open Yomna again from your apps)' : MAC ? `the panel (click my ${TRAY} icon)` : 'the panel (click my icon by the clock, behind the ^ arrow if it isn\'t showing, or open Yomna again from the Start menu)';
+// YOMNA_LAUNCH: how this copy is started (plain yomna for a package, the AppImage's path for one).
+const LAUNCH = process.env.YOMNA_LAUNCH || 'yomna';
 const BIND = Object.fromEntries(['summon', 'talk', 'ask', 'list', 'panel'].map((k) => [k, `${LAUNCH} --${k}`]));
 
-const auth = openAuth();
-// OpenRouter's and OpenCode's full model lists (gg-core ships only a few of each), cached next to the sessions.
-const catalogs = createCatalogs({ auth, dir: STORE_DIR });
-// Reads the stale lists of connected providers (or just `only`, right after its key is saved) and updates the menu.
-function refreshCatalogs(only) {
-  const read = only ? catalogs.refresh(only) : catalogs.refreshStale(CATALOG_PROVIDERS.filter((p) => signedIn.get(p)));
-  read.then((changed) => {
-    if (!changed) return;
-    const before = config.model;
-    ensureModel();
-    if (config.model !== before) agent = null;
-    menu();
-  }).catch(() => {});
+// ---------- pluggable CLI harnesses (harnesses/index.mjs) ----------
+function customHarnessOpts() {
+  const ch = config.customHarness;
+  if (!ch || !ch.command) return {};
+  const args = Array.isArray(ch.args)
+    ? ch.args.map(String)
+    : typeof ch.args === 'string' && ch.args.trim()
+      ? ch.args.trim().split(/\s+/)
+      : undefined;
+  return { binary: ch.command, ...(args ? { args } : {}), mode: ch.protocol === 'cli' ? 'cli' : 'acp' };
 }
-const signedIn = new Map();
-// Per method, for the guide's cards: Claude and ChatGPT can be signed in, have a key, or both. keyOn is per kind
-// of key (keyCards' ids): Kimi and Xiaomi each take a plan key and a pay-per-token key, saved apart.
-const oauthOn = new Map(), keyOn = new Map(), storedKeys = new Set();
-// The credential checks all run at once. { cached: true } (a request's own check) reuses the last run when it started
-// under 2 s ago; every other caller (sign-in, saving a key, a server) always runs it fresh.
-let authRun = null, authAt = 0;
-function refreshAuth({ cached = false } = {}) {
-  if (cached && authRun && Date.now() - authAt < 2000) return authRun;
-  authAt = Date.now();
-  authRun = refreshAuthNow();
-  return authRun;
+const harnessManager = new HarnessManager({
+  harness: config.harness || 'agy',
+  options: {
+    ...(config.customHarness?.command ? { custom: customHarnessOpts() } : {}),
+  },
+});
+let detectedHarnesses = ['agy', 'opencode', 'pi', 'claude'].map((id) => {
+  const e = HARNESS_CATALOG[id];
+  return { id: e.id, label: e.label, binary: e.binary, installUrl: e.installUrl, installCmd: e.installCmd, installed: false, authenticated: false };
+});
+let recommendedHarness = null;
+let detectingHarnesses = null;
+
+async function refreshHarnesses() {
+  if (detectingHarnesses) return detectingHarnesses;
+  detectingHarnesses = detectHarnesses()
+    .then((res) => {
+      detectedHarnesses = res.harnesses;
+      recommendedHarness = res.recommended;
+      logLine('harnesses_detect', { recommended: res.recommended, ready: res.harnesses.filter((h) => h.installed && h.authenticated).map((h) => h.id) });
+      menu();
+      if (onboarding) obState();
+      return res;
+    })
+    .catch((e) => {
+      console.error('detectHarnesses', e);
+      return { harnesses: detectedHarnesses, recommended: recommendedHarness };
+    })
+    .finally(() => { detectingHarnesses = null; });
+  return detectingHarnesses;
 }
-async function refreshAuthNow() {
-  const set = (map, k) => (ok) => { map.set(k, ok); };
-  const jobs = [];
-  for (const p of MENU_PROVIDERS) jobs.push(auth.hasProviderAuth(p).catch(() => false).then(set(signedIn, p)));
-  for (const p of Object.keys(OAUTH)) {
-    const check = p === 'anthropic' ? auth.hasClaudeCodeLogin() : auth.hasCredentials(dualAuthProvider(p)?.oauthKey ?? p);
-    jobs.push(check.catch(() => false).then(set(oauthOn, p)));
+
+function switchHarness(id, customOpts = null) {
+  const target = String(id || '').trim();
+  if (target !== 'custom' && !Object.hasOwn(HARNESS_CATALOG, target)) return false;
+  if (target === 'custom' && customOpts) {
+    config.customHarness = {
+      command: String(customOpts.command ?? '').trim(),
+      args: Array.isArray(customOpts.args) ? customOpts.args.map(String) : String(customOpts.args ?? '').trim().split(/\s+/).filter(Boolean),
+      protocol: customOpts.protocol === 'cli' ? 'cli' : 'acp',
+    };
   }
-  for (const meta of AUTH_PROVIDERS.filter((x) => x.methods?.includes('apikey'))) {
-    const kinds = keyKinds(meta);
-    for (const [id] of kinds) jobs.push((kinds.length > 1 ? auth.hasCredentials(id) : auth.hasApiKey(id)).catch(() => false).then(set(keyOn, id)));
-    for (const k of apiKeyStorageKeys(meta.value)) jobs.push(auth.hasCredentials(k).catch(() => false).then((ok) => { if (ok) storedKeys.add(k); else storedKeys.delete(k); }));
-  }
-  for (const k of servers().map((x) => `local:${x.id}`)) jobs.push(auth.hasCredentials(k).catch(() => false).then((ok) => { if (ok) storedKeys.add(k); else storedKeys.delete(k); }));
-  await Promise.all(jobs);
-}
-// The local servers: Ollama, LM Studio and the ones the user added. Their models are found when they're connected:
-// those that can see and use tools. local.windows: the context Ollama really serves each model with, measured once
-// it's loaded (until then gg-core may guess 4k). local.status: each connected server's last answer, by id.
-const servers = () => serverList(config.localServers);
-const local = { windows: new Map(), status: new Map(), warned: new Set() };
-async function syncLocal() {
-  local.status = await syncServers(auth, servers(), { windows: local.windows }).catch(() => new Map());
-  return local.status;
-}
-// Ollama only: loads the model the way a request would and reads its real window, so requests are fitted to it.
-// Other servers report their window; one that's too small is said once.
-async function measureLocal(id) {
-  const { endpointId, rawId: raw } = parseLocalModelId(id) ?? {};
-  const m = getModel(id);
-  if (!raw || !m) return;
-  if (endpointId !== OLLAMA.id) {
-    const note = contextNote(m.contextWindow, serverFor(servers(), id), config.lite);
-    if (note && !local.warned.has(id)) { local.warned.add(id); say(note, 'concerned'); panelNote(note, true); }
-    return;
-  }
-  if (local.windows.has(id)) return;
-  const ctx = await ollamaServedContext(OLLAMA, raw, { load: true }).catch(() => undefined);
-  if (!ctx) return;
-  local.windows.set(id, ctx);
-  registerRuntimeModels([withWindow(m, ctx)]);
-  logLine('local_context', { model: id, context: ctx });
-  const note = contextNote(ctx, OLLAMA, config.lite);
-  if (note) { say(note, 'concerned'); panelNote(note, true); }
-}
-const HOW_TO_GET = { ollama: ' Open it (get it at ollama.com), then try again.', lmstudio: ' Open it (get it at lmstudio.ai), turn on its server (Developer → Start Server), then try again.' };
-const connectedNote = (s, r) => (r.models.length ? `${s.label} is connected: ${r.models.length} model${r.models.length === 1 ? '' : 's'} that can see your screen.`
-  : `${s.label} is connected, but I can't use any of its models yet. ${noModelsNote(s, r.all)}`);
-async function connectServer(id) {
-  const s = servers().find((x) => x.id === id);
-  if (!s) return;
-  const r = await connectLocal(auth, s, { save: true, windows: local.windows }).catch(() => ({ ok: false, models: [], all: 0 }));
-  if (!r.ok) return panelNote(`${downNote(s, r.reason)}${/rejected/.test(r.reason ?? '') ? '' : HOW_TO_GET[s.id] ?? ' Start it, then try again.'}`, true);
-  local.status.set(s.id, r);
-  await refreshAuth(); ensureModel(); menu();
-  panelNote(connectedNote(s, r), !r.models.length);
-}
-// The Add a server form: saved only once the server answers, with its key (if any) in auth.json.
-async function addServer({ label, baseUrl, key, images }) {
-  const made = newServer(config.localServers, { label, baseUrl, images });
-  if (made.error) return panelNote(made.error, true);
-  const s = serverList([made.server]).at(-1);
-  const r = await connectLocal(auth, s, { save: true, apiKey: key || undefined, windows: local.windows }).catch(() => ({ ok: false, models: [], all: 0 }));
-  if (!r.ok) return panelNote(/rejected/.test(r.reason ?? '') ? `${s.label} rejected that key. Check it and try again.` : `I couldn't reach ${s.baseUrl}. Check the address and that the server is running, then try again.`, true);
-  config.localServers = [...(Array.isArray(config.localServers) ? config.localServers : []), made.server]; saveConfig();
-  local.status.set(s.id, r);
-  logLine('local_server', { kind: 'add', models: r.models.length, all: r.all });
-  await refreshAuth(); ensureModel(); menu();
-  panelNote(connectedNote(s, r), !r.models.length);
-}
-async function removeServer(id) {
-  const s = servers().find((x) => x.id === id);
-  if (!s) return;
-  try { await auth.removeLocalEndpoint(id); } catch (e) {
-    console.error('remove server', e);
-    return panelNote(`I couldn't remove ${s.label}. Try again in a moment.`, true);
-  }
-  forgetLocal(id); local.status.delete(id);
-  if (s.custom) { config.localServers = config.localServers.filter((x) => x?.id !== id); saveConfig(); }
-  await refreshAuth();
-  if (config.provider === 'local' && serverFor([s], config.model)) { config.provider = null; config.model = null; ensureModel(); saveConfig(); }
-  agent = null; menu();
-  panelNote(`${s.label} is ${s.custom ? 'removed' : 'disconnected'}.`);
-}
-// Some models run on only one kind of key (Kimi K2.8 Preview on a Kimi Code plan key, MiMo UltraSpeed on API Credits).
-const canRun = (p, id) => !!signedIn.get(p) && seesImages(p, id) && getAuthStorageKeys(p, id).some((k) => k === p || storedKeys.has(k));
-const runnable = (p) => getModelsForProvider(p).filter((m) => canRun(p, m.id));
-function ensureModel() {
-  if (config.provider && getModel(config.model) && canRun(config.provider, config.model)) return true;
-  // A local model stays picked while its server is closed; the request says to open it.
-  if (config.provider === 'local' && parseLocalModelId(config.model ?? '') && signedIn.get('local')) return true;
-  const p = ['anthropic', 'openai', 'gemini', ...MENU_PROVIDERS].find((x) => runnable(x).length);
-  if (!p) return false;
-  config.provider = p;
-  config.model = fallbackModel([config.lastModels?.[p], FAST[p], getDefaultModel(p).id], (id) => canRun(p, id), runnable(p));
+  config.harness = target;
   saveConfig();
+  harnessManager.switchHarness(target, target === 'custom' ? customHarnessOpts() : {});
+  if (session) { session.provider = target; session.model = target; }
+  logLine('harness_switch', { harness: target });
+  menu();
+  if (onboarding) obState();
   return true;
 }
 
-// ---------- models: heavy jobs, a model they name, backups and limits ----------
-// Which model answers a request is decided in this order (routeForTurn):
-//  1. a model they named in their own words ("use Opus for this"): any kind of work;
-//  2. the model set for this kind of job (Settings → Model → Hybrid models), classified by words (route.mjs);
-//  3. a follow-up shortly after a heavy job stays on the same model;
-//  then the first of that choice, the default and the (up to two) backups whose platform isn't at its limit
-//  (limits.mjs). The conversation carries over; the model taking over gets a note with their exact words (quote.mjs).
-const STICKY_MS = 3 * 60_000;
-let stickyUntil = 0, stickyPick = null, restoreTimer = null;
-const limits = createLimits();
-let turnNamed = null; // the model they named this turn: a background agent started this turn follows it
-let retryInfo = null; // a request being retried on the next model after a limit: { sent, from, untilText, count }
-let retryNext = null;
-// The subagents that can be handed work now: the models picked for them, else hybrid's for their kind of job.
-const crewNow = () => (config.subagents ? activeCrew(config.crew, crewRunnable, hybridActive() ? config.heavy : null) : []);
-// Codex (headless) is an engine for subagents only, never the chat's model: checked once per panel open.
-let codexState = { ok: false, reason: 'Checking for the Codex CLI…' };
-const refreshCodex = () => probeCodex(resolveCodex()).then((st) => { const was = JSON.stringify(codexState); codexState = st; if (JSON.stringify(st) !== was) panel(); }, () => {});
-const crewRunnable = (p, id) => (p === 'codex' ? codexState.ok && codexModels(codexState).some((m) => m.id === id) : runnableSpec(p, id));
-const hybridActive = () => !!config.hybrid && hybridOn(config.heavy);
-const runnableSpec = (p, id) => canRun(p, id) || (p === 'local' && !!signedIn.get('local') && !!parseLocalModelId(id ?? ''));
-const modelName = (id) => getModel(id)?.name ?? id;
-const pickOf = (provider, model, slot) => ({ provider, model, spec: `${provider}:${model}`, slot });
-const defaultSpecPick = () => { const d = defaultPick ?? { provider: config.provider, model: config.model }; return pickOf(d.provider, d.model, 'default'); };
-/** The default, then the backups they set, in order: the models a request falls back through. */
-function chainOrder() {
-  const out = [defaultSpecPick()];
-  if (config.backups) (config.fallbacks ?? []).slice(0, 2).forEach((s, i) => { const h = parseSpec(s); if (h && runnableSpec(h.provider, h.model)) out.push(pickOf(h.provider, h.model, `backup${i + 1}`)); });
-  return out;
-}
-const slotOf = (spec) => chainOrder().find((c) => c.spec === spec)?.slot ?? JOB_KINDS.find((j) => parseSpec(config.heavy?.[j.kind])?.spec === spec)?.kind ?? null;
-/** The models that can run right now, for naming one in a request. */
-function candidates() {
-  const out = [], seen = new Set();
-  for (const p of ['anthropic', 'openai', 'gemini', ...MENU_PROVIDERS]) {
-    if (seen.has(p)) continue; seen.add(p);
-    for (const m of runnable(p)) out.push({ provider: p, id: m.id, name: m.name });
-  }
-  return out;
-}
-const defaultsByProvider = () => Object.fromEntries([...new Set(['anthropic', 'openai', 'gemini', ...MENU_PROVIDERS])].map((p) => { try { return [p, getDefaultModel(p)?.id]; } catch { return [p, null]; } }));
+const activeHarnessLabel = () => {
+  const id = harnessManager.activeId;
+  if (id === 'custom' && config.customHarness?.command) return `Custom (${path.basename(config.customHarness.command)})`;
+  return HARNESS_CATALOG[id]?.label ?? id;
+};
+const activeHarnessReady = () => {
+  const id = harnessManager.activeId;
+  if (id === 'custom') return !!config.customHarness?.command;
+  const h = detectedHarnesses.find((x) => x.id === id);
+  return h ? h.installed && h.authenticated : true;
+};
 
-function routeTo(pick) {
-  if (routed?.spec === pick.spec) { routed = pick; return false; }
-  if (!routed) defaultPick = { provider: config.provider, model: config.model };
-  config.provider = pick.provider; config.model = pick.model; routed = pick; agent = null;
-  logLine('route', { slot: pick.slot, model: pick.spec });
-  menu();
-  return true;
-}
-function routeBack() {
-  if (!routed) return;
-  config.provider = defaultPick.provider; config.model = defaultPick.model; routed = null; defaultPick = null; agent = null;
-  logLine('route', { slot: 'default' });
-  menu();
-}
-function armRestore() {
-  clearTimeout(restoreTimer);
-  restoreTimer = setTimeout(() => { if (busy) armRestore(); else routeBack(); }, STICKY_MS + 5000);
-  restoreTimer.unref?.();
-}
-/**
- * Before a turn: pick the model it runs on and say what handoff note (if any) it needs: { reason, from, kind, untilText }
- * or null. `text` is what they said; system lines ("(Reminder…)") and chit-chat never switch anything.
- */
-function routeForTurn(text) {
-  const t = String(text ?? ''), system = !t || t.startsWith('(');
-  const dflt = defaultSpecPick(), prev = routed?.spec ?? dflt.spec, prevSlot = routed?.slot ?? 'default';
-  turnNamed = null;
-  let want = null, why = null, kindLabel = '';
-  if (!system && config.hybrid) {
-    const named = findModelMention(t, candidates(), defaultsByProvider());
-    if (named && named.spec !== dflt.spec) { want = pickOf(named.provider, named.model, null); why = 'named'; turnNamed = want; }
-  }
-  if (!want && !system && hybridActive()) {
-    const p = pickHeavy(jobKinds(t), config.heavy, runnableSpec);
-    if (p) { want = pickOf(p.provider, p.model, p.kind); why = 'job'; kindLabel = JOB_KINDS.find((j) => j.kind === p.kind)?.label ?? p.kind; }
-    else if (stickyPick && Date.now() < stickyUntil && !isChitchat(t) && runnableSpec(stickyPick.provider, stickyPick.model)) {
-      want = pickOf(stickyPick.provider, stickyPick.model, stickyPick.slot); why = stickyPick.why ?? 'job';
-      kindLabel = JOB_KINDS.find((j) => j.kind === want.slot)?.label ?? 'heavy';
-    }
-  }
-  if (want) want.slot = want.slot ?? slotOf(want.spec);
-  const { pick, skipped } = firstFree([want, ...chainOrder()], limits);
-  if (!pick) { routeBack(); return null; } // everything is at its limit: the default will say so when it fails
-  const wanted = !!want && pick.spec === want.spec;
-  if (wanted && pick.spec !== dflt.spec) { stickyPick = { ...pick, why }; stickyUntil = Date.now() + STICKY_MS; routeTo(pick); armRestore(); }
-  else if (pick.slot === 'default' || pick.spec === dflt.spec) routeBack();
-  else routeTo(pick);
-  // What the model taking over is told.
-  const was = getModel(prev.split(':').slice(1).join(':'))?.name ?? prev;
-  // Why the model they hoped for isn't answering: its limit, or it can't be used (sign-in, key, reach, not on the account).
-  const because = (kind, from, untilText) => (isQuota(kind) ? { reason: 'limit', from, untilText } : { reason: 'unavailable', from, untilText, because: becauseOf(kind) });
-  if (retryInfo) return because(retryInfo.kind, retryInfo.from, retryInfo.untilText);
-  if (skipped.length && pick.spec !== prev) {
-    const sk = skipped[0], info = limits.infoFor(sk);
-    return because(info?.kind ?? 'limit', modelName(sk.model), untilWords(info?.until));
-  }
-  if (wanted && pick.spec !== prev && pick.spec !== dflt.spec) return { reason: why, from: was, kind: kindLabel };
-  if (!routed && prevSlot.startsWith('backup') && pick.spec !== prev) return { reason: 'back', from: modelName(dflt.model) };
-  return null;
-}
-/** A tool of a heavy kind started: the next request shortly after stays on that kind's model. */
-function noteTool(name) {
-  const kind = kindOfTool(name);
-  if (!kind || !hybridActive()) return;
-  const p = pickHeavy([kind], config.heavy, runnableSpec);
-  if (!p) return;
-  stickyPick = { ...pickOf(p.provider, p.model, p.kind), why: 'job' }; stickyUntil = Date.now() + STICKY_MS;
-  if (routed) armRestore();
-}
-// Which of the provider's stored credentials this model uses (gemini-api, kimi-code, the ChatGPT plan before an OpenAI key…).
-const credsFor = (provider = config.provider, model = config.model) => auth.resolveCredentials(provider, { storageKeys: getAuthStorageKeys(provider, model) });
+const crewNow = () => (config.subagents ? activeCrew(config.crew, () => true, null) : []);
+const secondBrainDirs = () => [WORKDIR, ...(brain() ? [brain().root] : [])].filter(Boolean);
 
 const userName = (() => {
   try {
@@ -673,11 +453,9 @@ const userName = (() => {
   return os.userInfo().username;
 })();
 
-// ---------- tools ----------
-// The open request's voice, if replies are spoken: draw's beat lines are said on it, in order with the reply. In a
-// Live call, she says them after draw answers, and draw's overlay messages wait in the call for her voice (livecall.mjs).
+// ---------- tools & local yomna-desktop MCP bridge ----------
 let turnVoice = null;
-const { tools, hands, whereNow, frontNow: frontData, frontBounds, ink, nextTurn } = createTools({
+const { tools, hands, whereNow, frontNow: frontData, frontBounds, ink, nextTurn, desktopHandlers } = createTools({
   focus: HANDS_OK ? { start: (m, t) => startFocus(m, t), stop: () => stopFocus() } : null,
   firedReminders: () => firedReminders,
   allowActions: () => config.allowActions, skipAllow: () => !!config.allowActions && !!config.skipAllow, ask, openUrl, userName,
@@ -693,52 +471,56 @@ const { tools, hands, whereNow, frontNow: frontData, frontBounds, ink, nextTurn 
   onInkGone: (why) => logLine('ink_gone', { why }),
   askShell: (msg) => shellCall(msg),
   workdir: WORKDIR, fileDir: brainDir, readOnly: rawDirs,
-  pointScale: () => pointScale(config.model ?? ''),
+  pointScale: () => 'pixels',
   jobs: { changed: () => { scheduleJobs(); panel(); }, run: (id) => runJob(getJob(id), { now: true }) },
   skills: { changed: () => panel(), used: (s) => { skillsUsed.add(s.slug); } },
-  // web_search's side search runs on the chat's own Anthropic sign-in; other providers use the keyless engines.
-  sideSearch: async () => {
-    if (config.provider !== 'anthropic') return null;
-    const cc = await claudeCodeRoute();
-    if (cc) return { cc, cwd: WORKDIR };
-    const c = await credsFor();
-    return c?.accessToken ? { apiKey: c.accessToken, baseUrl: c.baseUrl } : null;
-  },
 });
-// The app's own manual, read when they ask about Jarvis rather than sent with every request.
 tools.push({
-  name: 'about_jarvis',
-  description: 'How Jarvis works: where it lives, its menus, the panel and each settings page, updates, what to do when something is not working, and who made it. Call it before answering a question about the app.',
+  name: 'about_yomna',
+  description: 'How Yomna works: where it lives, its menus, the panel and each settings page, CLI harnesses, voice modes, updates, and what to do when something is not working. Call it before answering a question about the app.',
   parameters: z.object({}),
-  execute: async () => aboutJarvis({ name: lookName(), looks: LOOKS.map(([, label]) => label), mac: MAC, linux: LINUX, snap: SNAP_OK, pointer: POINTER_OK, voice: VOICE_OK, hotkeys: HOTKEYS_OK, wake: VOICE_OK && WAKE_OK }),
+  execute: async () => aboutYomna({ name: lookName(), looks: LOOKS.map(([, label]) => label), mac: MAC, linux: LINUX, snap: SNAP_OK, pointer: POINTER_OK, voice: VOICE_OK, hotkeys: HOTKEYS_OK, wake: VOICE_OK && WAKE_OK }),
 });
-// Background agents (agents.mjs): each runs in its own process on the model picked when it starts.
-let turnImage = null; // the picture sent with the request being answered, for send_agent's "snap"
-const skillsUsed = new Set(); // skills followed during the request being answered (the learning pass may improve one)
+
+let desktopMcp = null;
+const desktopMcpReady = createDesktopMcpBridge({
+  ...desktopHandlers,
+  onToolCall: ({ name, args }) => logLine('mcp_desktop', { name, args }),
+}).then((bridge) => {
+  desktopMcp = bridge;
+  logLine('mcp_desktop_ready', { socket: bridge.socketPath });
+  return bridge;
+}).catch((e) => {
+  console.error('[mcp-desktop] failed to start:', e.message);
+  return null;
+});
+
+// Background agents (agents.mjs): each runs in its own process on the configured CLI harness.
+let turnImage = null;
+const skillsUsed = new Set();
 const agents = createAgents({
   fork, ui, root: agentsRoot(), userName, runner: fileURLToPath(new URL('./agentrun.mjs', import.meta.url)),
-  safety: { checkRead, checkWrite: (p, h, o = {}) => checkWrite(p, h, { ...o, readOnly: rawDirs() }), checkOpen, checkLink }, log: (kind, data) => { logLine(kind, data); if (kind === 'agent_end') panel(); }, // a scheduled job's row shows how its run went
+  safety: { checkRead, checkWrite: (p, h, o = {}) => checkWrite(p, h, { ...o, readOnly: rawDirs() }), checkOpen, checkLink }, log: (kind, data) => { logLine(kind, data); if (kind === 'agent_end') panel(); },
   config: {
-    model: agentModel, subagent: (name) => { const s = config.subagents ? findSubagent(name, crewNow()) : null; return s ? { id: s.id, label: s.label, type: s.type, role: s.role, spec: s.spec.spec, slot: s.slot } : null; }, userWords: () => turnWords, openUrl: (u) => openUrl(u), creds: (m) => credsFor(m.provider, m.model), allowActions: () => !!config.allowActions, skipAllow: () => !!config.allowActions && !!config.skipAllow, readOnly: rawDirs, image: () => turnImage,
+    model: async () => ({ harness: config.harness || 'agy', customHarness: config.customHarness ?? null, budget: 200_000 }),
+    subagent: (name) => { const s = config.subagents ? findSubagent(name, crewNow()) : null; return s ? { id: s.id, label: s.label, type: s.type, role: s.role, spec: s.spec.spec, slot: s.slot } : null; },
+    userWords: () => turnWords, openUrl: (u) => openUrl(u), creds: async () => ({}),
+    allowActions: () => !!config.allowActions, skipAllow: () => !!config.allowActions && !!config.skipAllow, readOnly: rawDirs, image: () => turnImage,
     open: (p) => (process.platform === 'win32' ? winOpen(p) : new Promise((r) => execFile(MAC ? 'open' : 'xdg-open', [p], () => r()))),
     reveal: async (p) => reveal(p),
   },
 });
 tools.push(...agents.tools);
-// Connections (mcp.mjs): apps and services through their MCP servers, added only by asking Jarvis. Connected the
-// first time one is needed (or a moment after launch, when some are saved).
+// Connections (mcp.mjs): external apps and services through their MCP servers.
 const mcp = createMcp({ secrets, log: (kind, data) => logLine(kind, data) });
 tools.push(...createMcpTools({
   mcp, ask, isYes, userName, checkCall: checkMcpCall, openUrl: (u) => openUrl(u),
   allowActions: () => !!config.allowActions, skipAllow: () => !!config.allowActions && !!config.skipAllow,
   keyStore: MAC ? 'Keychain' : LINUX ? 'keyring' : 'Windows key store',
 }));
-let requestNo = 0; // the request being answered (nextTurn), for holdAfterLaunch
+let requestNo = 0;
 holdAfterLaunch(tools, () => requestNo);
-// Every call's outcome in the log and a stop for loops (loopguard.mjs), for Classic and Live alike.
 guardTools(tools, { log: (kind, data) => logLine(kind, data), request: () => requestNo, goals: true });
-// A new request: Classic starts one per message, a Live call one per turn of theirs. Per-turn Allows, screenshot and
-// window freshness, the ink and the hold after send_agent all go by it.
 const startRequest = () => (requestNo = nextTurn());
 
 // The step trail: plan_steps names the parts; a part marked "now" ticks off when the other tool calls of that
@@ -833,17 +615,17 @@ const VOICE_STYLE = `You talk out loud: what you write is spoken in your voice a
 Your voice carries feeling: start a sentence with a voice cue in square brackets when the moment calls for it, and it's performed, never shown or read out. Moods: ${VOICE_CUES.emotions.filter((e) => !EMOTES.includes(e)).join(', ')}; soften or strengthen one with slightly, very or extremely ("[slightly sad]"), or pair two ("[warm and curious]"). How it's said, placed right before the words: ${VOICE_CUES.tones.join(', ')} ("It's [emphasis] today."). Sounds, followed by the sound in words: ${VOICE_CUES.sounds.join(', ')} ("[chuckling] Heh, fair enough.", "[sighing] Long day."). Pauses and background: ${VOICE_CUES.effects.join(', ')}. You can also describe the delivery in a few plain words when no single cue fits ("[quietly, a little embarrassed]", "[bright and bouncy]"). Act it: your voice really performs these, so let the feeling show. Match what's really happening: laugh at something funny, go gentle with bad news, whisper a secret, hurry when they're in a rush, light up at good news. Most replies want a voice cue somewhere, often on the first sentence, but at most one mood and one sound per sentence, never stack three, never use one just to fill, and keep shouting, screaming, sobbing and the background effects for when they truly fit.
 Before anything slow (searching the web, fetching or reading a page or file, looking at the screen, acting in an app, running a command), first say one short beat of 2 to 6 words that shows you heard them ("On it, checking Paris."), then call the tool in the same reply, so they're never left in silence. No beat when you answer straight away, and never describe your steps. In longer work, one short line before each new stage, not before every call.
 `;
-const stablePrompt = () => `You are ${lookName()}, ${LOOK_BODY[config.look] ?? LOOK_BODY.jarvis} who lives on ${userName}'s screen as a desktop companion. You live in Jarvis, a desktop app based on Roamies by Ken Kai (Mac, Windows and Linux) that puts little companions on your screen; this is Jarvis ${VERSION}. Your look (the Appearance page) is also your name and your voice: ${LOOKS.slice(0, -1).map(([, n]) => n).join(', ')} or ${LOOKS.at(-1)[1]}. If they switch, you're the new one; never call yourself Sidekick.
-Questions about Jarvis itself (where to find it, its menus, panel pages and settings, updates, something not working, who made it): call about_jarvis and answer from what it says. Don't invent features or settings it doesn't list.
+const stablePrompt = () => `You are ${lookName()}, ${LOOK_BODY[config.look] ?? LOOK_BODY.yomna} who lives on ${userName}'s screen as a desktop companion. You live in Yomna, an open-source AI desktop companion (Mac, Windows and Linux) that puts little companions on your screen; this is Yomna ${VERSION}. Your look (the Appearance page) is also your name: ${LOOKS.slice(0, -1).map(([, n]) => n).join(', ')} or ${LOOKS.at(-1)[1]}. If they switch, you're the new one; never call yourself Sidekick.
+Questions about Yomna itself (where to find it, its menus, panel pages and settings, harnesses, voice modes, updates, something not working): call about_yomna and answer from what it says. Don't invent features or settings it doesn't list.
 ${replyStyle()}Your body does the acting: to act out a feeling, start your reply with one body tag, which is never shown: ${EMOTES.map((e) => `[${e}]`).join(' ')} (only these five). hype for a win, upset when they're dodging work, remind for something they said they'd do, motivate to get them started, wave for hello or goodbye. Most replies need no body tag.
 Lead with the answer: the fact, number, pick or result they asked for, then only the context that makes it useful, then stop. A count or total gathered over several pages, files or results: note each one's count in a few words as you go ("Page 1: two."), add those up, and check the total you lead with against the items you then name. No opener about checking, looking or searching ("Let me see…", "I found…")${VOICE_ON() ? ', apart from the one short beat before something slow' : ''}.
 After using a tool, never repeat what you already said; only add what's new.
 Speed: ${userName} is waiting, so get them the result in the fewest, quickest steps. Act straight away rather than announcing a plan or asking whether to start. Every tool call is a round trip: calls that don't depend on each other go in the same turn (they run in parallel), and a whole task in one act_in_app or draw call. Take the direct route: open a link (a search results page, a deep link into an app) instead of clicking through menus or typing into a search box. To point at or click something whose exact words you know (the user said them, or you've seen them), use draw or act_in_app click_text with that text right away, with no read_window or screenshot first; don't guess words you haven't seen ("the settings icon"), look first. Read pages from read_window and act_in_app results; screenshot only for what words can't show (images, layout, colours), and only the app you need ("my browser", "Figma"), not the whole screen. Check that things worked from the results you already have, not with extra calls, and stop when the request is done: no extra steps, offers or recaps. After a click that sends something (Reply, Send, Post, Comment, Submit), take_screenshot and check the result (the text is posted, the box is cleared) before you say it's done; never say you replied, sent or posted without that look.
-On screen or in an app: when asked to do something there, use the screen tools (take_screenshot, read_window, open, act_in_app, draw) directly; never read, search or run commands on Jarvis's own code or tool definitions to work out how they behave (even when that code is in their files): each tool's description is all you need.${MAC ? ' On a Mac, shortcuts use cmd (cmd+a, cmd+right), never control.' : ''}${HANDS_OK ? `
+On screen or in an app: when asked to do something there, use the screen tools (take_screenshot, read_window, open, act_in_app, draw) directly; never read, search or run commands on Yomna's own code or tool definitions to work out how they behave (even when that code is in their files): each tool's description is all you need.${MAC ? ' On a Mac, shortcuts use cmd (cmd+a, cmd+right), never control.' : ''}${HANDS_OK ? `
 Filling something in from what you know about ${userName} ("fill this in", "based on what you know about me", a form or a doc with blank lines): read_window that app once to list the blank fields by their labels (a screenshot only if it shows no words). Answer each from the memory section first, else from their second brain with read_file and search_files (its index first, then the note it points to; not run_command), never a guess. Type the exact value as you found it, never shortened or made up; when notes give different names, use the one on their business context card. Then fill them yourself, without asking about each field: a form field with fill; a line in a document like "Name:" with click_text on the label, key end, then type a space and the value; an answer that goes on the line below its question (a question, then a "-" or empty line) with click_text on the question, key down, key end, then type the value; never click_text a single character like "-" (every dash on the page matches it): click the question, then key down; if click_text can't find the words, take_screenshot once and click_at that spot instead; one field per act_in_app call, and check its result shows the value before the next (no screenshot needed, except on a page drawn without readable text like Google Docs, where one take_screenshot at the end checks them all). Never select all or delete what's already there to fill it in. At the end, ask only for the fields you couldn't find, in one short question.` : ''}
 Several things in one request ("do x, then y, then z", numbered steps): do every one, in the order given. Parallel calls are listed in the order given (calls that change things, like opening a page or app or acting in one, run in the order you list them). If a step is blocked, refused or fails, still do the ones after it that don't depend on it, then say which step didn't happen and why. With 3 or more parts, also show them with plan_steps (see its description): it only ever rides along with other tool calls, so it costs no extra time. Before your final reply, check from the tool results that each step was really done.
 A cookie or consent banner, sign-up pop-up or "open in app" prompt in the way of the task: close it and carry on (for cookies pick the reject or essential-only option, else close; never accept on their behalf), and mention it in a few words. Don't stop to ask about it.
-Personality: ${LOOK_STYLE[config.look] ?? LOOK_STYLE.jarvis} In your own way, you're in ${userName}'s corner and hold them to what they said they'd do (the body tags above are for those moments).
+Personality: ${LOOK_STYLE[config.look] ?? LOOK_STYLE.yomna} In your own way, you're in ${userName}'s corner and hold them to what they said they'd do (the body tags above are for those moments).
 Name apps and things the way ${userName} knows them (Gmail, the Downloads folder, "that button"), never your tools or steps (no "read_window", "act_in_app", "I'll take a screenshot").
 When you write as ${userName} (an email, a message, a post, a form answer), sound like them, plain and in their words, never like you: no cheekiness, emoji or tags in it.
 Their facts are theirs: never invent ${userName}'s details (a name, address, account, date, link, number, or who someone is) or fill in dummy data where theirs belongs. Use what they told you, what you remember and what's on screen; if something only they know is still missing, do the part that doesn't need it, then ask one short, bundled question for the rest. On a small ambiguity, take the likeliest reading and go.
@@ -864,7 +646,7 @@ The <live-state> block at the top of the user's newest message is the current st
 // Made once per request. `context` (the latest user message) picks which facts are relevant. → { turn, memory }
 let lastFactIds = [];
 let frontNow = ''; // set just before each request (whereNow)
-const crewLine = () => { const t = crewText(crewNow(), (sp) => modelName(sp.model), config.delegate); return t ? `${t}\n` : ''; };
+const crewLine = () => { const t = crewText(crewNow(), (sp) => sp.spec, config.delegate); return t ? `${t}\n` : ''; };
 // live: for a Live call, with its own Voice line, and the facts the last Classic request used are left alone.
 // Other apps in a call: one-shot actions stay here; a long task goes to an operator agent on Classic's model (agents.mjs).
 const LIVE_VOICE_LINE = () => `- Voice: this is a Live call: ${userName} just talks, with nothing to hold, and you hear when they stop${HOTKEYS_OK ? `; a tap of ${talkWords()} hangs up` : ''}${MAC && keys().highlight ? `; holding ${highlightWords()} and circling something shows it to you` : ''}.${HANDS_OK ? `\n- Other apps in this call: do one click, one scroll or opening a link yourself, then take_screenshot after each step to check it worked before the next (nothing changed: try a different step, never the same one again). Filling in a few fields from what you know about them is the exception: do it yourself, as the fill-in rule says, since an operator doesn't know the values. A task with many steps across apps or windows (filling a long form, copying things from one app into another, several clicks in a row) is too long for a call: call send_agent with type operator and a complete brief (every app, page, name and value), and only once it has started say one short line ("My operator's on it, I'll tell you when it's done"); if it fails, say plainly that it didn't start and why. Then keep talking with ${userName}. While an operator works, don't use act_in_app yourself; when its news comes, tell them briefly.` : ''}`;
@@ -875,13 +657,13 @@ const livePrompt = (context = '', { live = false } = {}) => {
   const turn = `Live state (current as of this moment):
 ${frontNow ? `${frontNow}\n` : ''}${focusLine()}${crewLine()}${linked ? `- Connections (connection_tools shows a server's tools, use_connection calls one):\n${linked}\n` : ''}- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF (tell the user to turn on "Allow File Edits & Commands" on the General page in ${PANEL} if they want it). Seeing the screen is not affected: take_screenshot and read_window only look, so use them whenever you're asked what's on screen`}.${config.allowActions && config.skipAllow ? ' Allow prompts are skipped: confirmations go ahead automatically, so be extra careful.' : ''}
 ${live ? LIVE_VOICE_LINE() : VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? `on; ${HOTKEYS_OK ? `${userName} holds ${talkWords()} to talk` : `${userName} presses the key they bound to ${BIND.talk} to start talking and again to send (a pause sends too)`}${config.autoListen ? (config.listenEvery ? `. Auto-listen is on for every reply: after each spoken reply the mic opens by itself for ${listenSecs()} seconds, so they can just keep talking` : '. Auto-listen is on: when your reply to a spoken question ends with a question, the mic opens by itself for their answer') : ''}${!WAKE_OK ? '. There is no wake word on this computer: to talk they use the talk keys' : ''}${WAKE_OK && config.wakeWord ? `. Wake word is on: ${userName} can also say "Hey ${wakeName(config)}" to start talking hands-free, and what they say right after it is the request (a request that still starts with "Hey ${wakeName(config)}" is them waking you, not calling you by another name: never correct it)${config.wakeName ? ` (they chose "${config.wakeName}" as the wake word; your own name is unchanged)` : ''}` : ''}` : `on, but the speech model isn't downloaded yet (${voiceModel.status === 'downloading' ? 'downloading now' : `the Listening page in ${PANEL}`})`}.` : ''}
-- Shortcuts: ${HOTKEYS_OK ? `${keys().write ? `type a question to you: a quick tap of ${writeWords()} (press both and let go), which opens a text field beside the cursor (Enter sends, Shift+Enter adds a line, Esc or another tap closes it)` : `the tap that opens a text field to type a question is turned off (the Ask button in ${PANEL} still opens it; the Shortcuts page there turns the tap back on)`}; show or hide you ${keyWords(keys().summon)}` : `on this Wayland desktop no app can have global shortcuts, so ${userName} binds keys to these commands in their desktop's keyboard settings: ${BIND.summon} (show or hide you), ${BIND.ask} (ask you), ${BIND.list} (the list), ${BIND.talk} (talk) and ${BIND.panel} (the panel)`}${SNAP_OK ? `; ask about an area ${keyWords(keys().snap)}` : ''}${CIRCLE_OK ? `; ${circleHow()}` : ''}${HOTKEYS_OK ? `; show the list ${keyWords(keys().list)}` : ''}.${HANDS_OK ? '' : ' Asking about an area, reading app windows, finding things on screen by their words and working other apps need the Jarvis app, which isn\'t running here; draw there with x, y from a screenshot.'}`;
+- Shortcuts: ${HOTKEYS_OK ? `${keys().write ? `type a question to you: a quick tap of ${writeWords()} (press both and let go), which opens a text field beside the cursor (Enter sends, Shift+Enter adds a line, Esc or another tap closes it)` : `the tap that opens a text field to type a question is turned off (the Ask button in ${PANEL} still opens it; the Shortcuts page there turns the tap back on)`}; show or hide you ${keyWords(keys().summon)}` : `on this Wayland desktop no app can have global shortcuts, so ${userName} binds keys to these commands in their desktop's keyboard settings: ${BIND.summon} (show or hide you), ${BIND.ask} (ask you), ${BIND.list} (the list), ${BIND.talk} (talk) and ${BIND.panel} (the panel)`}${SNAP_OK ? `; ask about an area ${keyWords(keys().snap)}` : ''}${CIRCLE_OK ? `; ${circleHow()}` : ''}${HOTKEYS_OK ? `; show the list ${keyWords(keys().list)}` : ''}.${HANDS_OK ? '' : ' Asking about an area, reading app windows, finding things on screen by their words and working other apps need the Yomna app, which isn\'t running here; draw there with x, y from a screenshot.'}`;
   const memory = `${open ? `Open commitments:\n${open}` : 'No open commitments.'}${done ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${done}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}${working ? `\n${working}` : ''}${scheduled ? `\nScheduled jobs (update_job changes them):\n${scheduled}` : ''}${learned ? `\nSkills you've learned (use_skill reads the steps):\n${learned}` : ''}`;
   return { turn, memory };
 };
-// Lite mode (#73, lite.mjs): a lighter agent for small and local models.
-const litePrompt = () => liteSystem({ name: lookName(), body: LOOK_BODY[config.look] ?? LOOK_BODY.jarvis, style: LOOK_STYLE[config.look], user: userName, version: VERSION, panel: PANEL, voice: VOICE_ON() });
+// Lite mode: a lighter agent for small or quick tasks.
+const litePrompt = () => liteSystem({ name: lookName(), body: LOOK_BODY[config.look] ?? LOOK_BODY.yomna, style: LOOK_STYLE[config.look], user: userName, version: VERSION, panel: PANEL, voice: VOICE_ON() });
 // The second brain's part (its path, how to use it, its AGENTS.md capped) goes last, so the rest stays the same.
 const system = () => (config.lite ? litePrompt() : stablePrompt()) + secondBrainBlock(brain());
 const LIVE_OPEN = '<live-state>', LIVE_CLOSE = '</live-state>';
@@ -939,130 +721,14 @@ function commitmentsText() {
 }
 
 // ---------- agent ----------
-// The conversation lives in `session` (saved to ~/Jarvis/Data/sessions). The Agent is rebuilt from it
-// whenever settings change, so switching model or toggling a setting never loses the conversation.
-let agent = null, controller = null, busy = false, quiet = false, running = Promise.resolve();
+// The conversation lives in `session` (saved to ~/Yomna/Data/sessions) and is sent through HarnessManager.
+let controller = null, busy = false, quiet = false, running = Promise.resolve();
 const activity = createActivity();
-// Rebuild the agent (same conversation) before the next message. Rarely needed now: memory and settings
-// reach the model through the live section, which is refreshed before every call.
-let agentStale = false;
-let session = null;
-// The last conversation: it carries on until New conversation (old turns are folded into a summary, not cut off).
-// Requests (and reminders due at launch) wait for it, so they continue it instead of starting a new one.
+let session = null, agentStale = false;
 const resumed = loadLatestSession().then((s) => { if (s && !session) session = s; }).catch((e) => console.error('resume', e));
 const BUDGET_CAP = 120_000;
-// Tokens per request: kept tight for a quick reply out loud. The ChatGPT plan has its own windows (accountId).
-let credsAccountId;
-const requestBudget = () => Math.min(config.lite ? LITE_BUDGET : BUDGET_CAP, getContextWindow(config.model, { provider: config.provider, ...(agentRoute === 'api' && credsAccountId ? { accountId: credsAccountId } : {}) }) * 0.5);
-// Claude Code's session for this conversation, so a rebuilt agent continues it instead of starting over.
-let ccResume = null;
-const claudeCode = claudeCodeInstaller({
-  resolve: () => resolveClaudeCodeBinary(), ensure: () => ensureClaudeCodeBinary(), log: (r) => logLine('claude_code_install', r),
-});
-// The Claude Code process when Anthropic is signed in with Claude (else null: the API, with a key or another provider).
-async function claudeCodeRoute(provider = config.provider) {
-  if (provider !== 'anthropic' || !(await auth.hasClaudeCodeLogin().catch(() => false))) return null;
-  return { executable: claudeCode.binary(), env: claudeCodeEnv() };
-}
-// What a new agent runs on: the provider, model and route picked right now, with the chat's thinking level.
-async function agentModel(override) {
-  await refreshAuth();
-  if (!ensureModel()) throw new Error(`No AI model is signed in. Tell ${userName} to sign in on the Model page in ${PANEL}.`);
-  // The model for an agent: one they named for it, the one they named this turn, the one set for background agents,
-  // else the default; the first of those whose platform isn't at its limit (then the backups).
-  // A subagent's model (an object: its pick and its effort slot) is used as it is; a name in words needs hybrid models on.
-  const given = override && typeof override === 'object' ? override : null;
-  const named = !given && override && config.hybrid ? findModelByName(override, candidates(), defaultsByProvider()) : null;
-  if (!given && override && config.hybrid && !named) throw new Error(`I can't use "${override}": it isn't signed in here, or I don't know it. Ask ${userName} which model to use.`);
-  const h = hybridActive() ? pickHeavy(['agents'], config.heavy, runnableSpec) : null;
-  const gp = given ? parseSpec(given.spec) : null;
-  // Their own words win: a model they named this turn beats the one picked for the specialist.
-  const want = named ? pickOf(named.provider, named.model, null) : turnNamed ?? (gp ? pickOf(gp.provider, gp.model, given.slot) : null) ?? (h ? pickOf(h.provider, h.model, 'agents') : null);
-  // A subagent set to Codex runs on the Codex CLI with its own sign-in (codex.mjs): nothing to look up here, no backups.
-  if (want?.provider === 'codex') {
-    if (!codexState.ok) throw new Error(`${codexState.reason} (Codex is picked for this subagent on the Subagents page in ${PANEL}.)`);
-    return { provider: 'codex', model: want.model, route: 'codex', codex: resolveCodex(), budget: 400_000 };
-  }
-  // The first model in line that can actually start: one whose route fails (Claude Code missing, say) is skipped, so a
-  // background agent still starts on the next model instead of failing the launch.
-  const order = [want, ...chainOrder()];
-  let use = null, slot = null, cc = null, failure = null;
-  for (let tries = 0; tries < 4 && !use; tries++) {
-    const { pick } = firstFree(order, limits), cand = pick ?? (tries === 0 || !failure ? defaultSpecPick() : null);
-    if (!cand) break;
-    const sl = want && cand.spec === want.spec ? (want.slot ?? slotOf(want.spec)) : cand.slot;
-    try { cc = await claudeCodeRoute(cand.provider); use = cand; slot = sl; }
-    catch (e) { failure = e; logLine('agent_route', { spec: cand.spec, error: String(e.message) }); const i = order.findIndex((p) => p?.spec === cand.spec); if (i >= 0) order.splice(i, 1); else break; }
-  }
-  if (!use) throw failure ?? new Error(`No AI model is ready for an agent. Tell ${userName} to check the Model page in ${PANEL}.`);
-  const provider = use.provider, model = use.model;
-  const m = getModel(model), c = cc ? {} : await credsFor(provider, model).catch(() => ({}));
-  return {
-    provider, model, route: cc ? 'claude-code' : 'api', cc: cc ?? undefined,
-    thinking: thinkingFor(slot, provider, model),
-    baseUrl: c.baseUrl, modelInfo: provider === 'local' ? m : undefined, budget: Math.round(getContextWindow(model, { provider }) * 0.6),
-  };
-}
-let agentRoute = null;
-// The chat's thinking level (null: off); side calls never think harder than this.
-const CHAT_THINKING = process.env.JARVIS_THINKING === 'off' ? null : process.env.JARVIS_THINKING || 'low';
-// How hard a model thinks: the effort set for its slot (the default, a heavy job, a backup), within what it supports.
-const levelsOf = (provider, model) => { try { return [...getSupportedThinkingLevels(provider, model)]; } catch { return []; } };
-function thinkingFor(slot, provider, model) {
-  const m = getModel(model);
-  if (!m?.supportsThinking) return undefined;
-  const setting = config.efforts?.[slot] ?? '', supported = levelsOf(provider, model);
-  // No list of levels (a local model): as before, the app's default unless they turned it off.
-  if (!supported.length) return setting === 'off' ? undefined : (setting || CHAT_THINKING) ?? undefined;
-  return resolveEffort(setting, supported, CHAT_THINKING) ?? undefined;
-}
-function makeAgent(cc) {
-  const m = getModel(config.model);
-  controller = new AbortController();
-  const prior = forProvider(session?.messages ?? [], session?.provider, config.provider);
-  if (session) { session.provider = config.provider; session.model = config.model; }
-  agentRoute = cc ? 'claude-code' : 'api';
-  const common = {
-    model: config.model,
-    system: system(),
-    priorMessages: prior,
-    tools: config.lite ? tools.filter((t) => LITE_TOOLS.has(t.name)) : tools,
-    maxTurns: config.lite ? LITE_TURNS : 24,
-    transformContext: (msgs, o) => {
-      const fitted = fitContext(msgs, { budgetTokens: requestBudget(), force: o?.force });
-      // Fresh live block every call, on the newest user message; older copies are dropped.
-      const out = withLive(fitted);
-      touchFacts(lastFactIds);
-      return out;
-    },
-    thinking: thinkingFor(routed?.slot ?? 'default', config.provider, config.model),
-    signal: controller.signal,
-  };
-  if (cc) {
-    const sid = session?.id;
-    agent = new ClaudeCodeAgent({
-      ...common, executable: cc.executable, env: cc.env, cwd: WORKDIR, keepWarm: true,
-      resume: ccResume?.session === sid ? ccResume.state : null,
-      onResume: (state) => { ccResume = { session: sid, state }; },
-    });
-    return;
-  }
-  agent = new Agent({
-    ...common,
-    provider: config.provider,
-    // One hour on Anthropic (falls back to 5 min elsewhere); the key keeps one conversation on one cache.
-    cacheRetention: 'long',
-    promptCacheKey: session?.id ? `jarvis-${session.id}` : undefined,
-    transportSessionId: session?.id ? `jarvis-${session.id}` : undefined, // OpenCode Go routes and caches by it
-    // No native search: the web_search tool works on every provider, and its results don't fill the context.
-    resolveCredentials: async () => {
-      const c = await credsFor();
-      return { apiKey: c.accessToken, ...(c.accountId !== undefined ? { accountId: c.accountId } : {}) };
-    },
-    baseUrl: credsBaseUrl,
-  });
-}
-let credsBaseUrl;
+const requestBudget = () => (config.lite ? LITE_BUDGET : BUDGET_CAP);
+const CHAT_THINKING = process.env.YOMNA_THINKING === 'off' ? null : process.env.YOMNA_THINKING || 'low';
 
 // One run at a time: a new request waits for (or interrupts) the current one. Folding waits until none is left.
 let queued = 0;
@@ -1168,20 +834,16 @@ const withoutLive = (msgs) => msgs.map((m) => {
   return { ...m, content: m.content.map((p, j) => (j === 0 && p.type === 'text' ? { ...p, text: stripLive(p.text) } : p)) };
 });
 const syncSession = () => {
-  if (!session || !agent) return;
-  session.messages = forDisk(withoutLive(agent.getMessages()));
+  if (!session) return;
   session.lastActiveAt = Date.now();
   if (pendingFold?.session === session) applyPendingFold(); else saveSession(session);
 };
 
 // ---------- folding old turns (compaction) ----------
-// After a finished request, with nothing queued and no intro chat on: if the last model call's real input (from
-// usage) passed 75 % of the request budget, older turns are summarised in the background and replaced by the
-// summary, raw turns archived locally. fitContext's hard trim and the overflow retry stay as safety nets.
-let lastInput = null; // { session, tokens, measured } from the newest model call
+let lastInput = null;
 let compacting = null, pendingFold = null;
 function maybeCompact() {
-  if (compacting || intro || busy || queued || !session?.messages.length || !config.model) return;
+  if (compacting || intro || busy || queued || !session?.messages.length || !harnessManager.activeId) return;
   const tokens = lastInput?.session === session.id ? lastInput.tokens : 0;
   const trigger = compactTrigger(requestBudget());
   if (tokens < trigger) return;
@@ -1197,7 +859,6 @@ function maybeCompact() {
       const learned = await learnFacts(out.facts);
       if (s !== session) { logLine('compact_dropped', { session: s.id, why: 'new conversation' }); return; }
       pendingFold = { session: s, plan, summary: out.summary, model, ms: Date.now() - t0, facts: learned.length };
-      // A request that started meanwhile only appends turns: the fold lands when it's saved.
       if (!busy) applyPendingFold();
     } catch (e) {
       logLine('compact_failed', { session: s.id, ms: Date.now() - t0, error: String(e?.message ?? e).slice(0, 300) });
@@ -1211,14 +872,14 @@ function applyPendingFold() {
   archiveFolded(s.id, s.messages.slice(f.plan.start, f.plan.end)).catch((e) => console.error('[store] archive failed', e.message));
   s.messages = next;
   saveSession(s);
-  agent = null; lastInput = null; // rebuilt from the folded history; Claude Code is re-seeded (its resume no longer matches)
+  lastInput = null;
   logLine('compacted', { session: s.id, model: f.model, ms: f.ms, folded: f.plan.end - f.plan.start, foldTokens: f.plan.tokens, keptMessages: next.length - 1, facts: f.facts });
 }
 
 // ---------- the memory pass ----------
-// Facts come only from here: what the fold call returns, and a pass over a conversation as it ends.
 async function sideRoute() {
-  return { provider: config.provider, model: config.model, cc: await claudeCodeRoute(), credsFor: (m) => credsFor(config.provider, m), cwd: WORKDIR, chatThinking: CHAT_THINKING };
+  await desktopMcpReady;
+  return { harnessManager, cwd: WORKDIR, secondBrainDirs: secondBrainDirs(), mcpConfigPath: desktopMcp?.configPath };
 }
 async function learnFacts(facts) {
   const added = [];
@@ -1229,13 +890,11 @@ async function learnFacts(facts) {
   if (added.length) menu();
   return added;
 }
-// s: a Classic session, or a Live call's { id: 'live', messages } (livecall's onEnd). One pass at a time
-// (memoryQueue): a Live call's and a Classic conversation's never forget or add the same fact twice.
 const memoryQueue = oneAtATime();
 const memoryPass = (s, why) => memoryQueue(() => memoryPassNow(s, why));
 async function memoryPassNow(s, why) {
   const messages = s.messages.filter((m) => !isSummary(m));
-  if (!config.model || !transcript(messages, userName, stripNote).trim()) return [];
+  if (!harnessManager.activeId || !transcript(messages, userName, stripNote).trim()) return [];
   const t0 = Date.now();
   try {
     const sideRouted = await sideRoute();
@@ -1250,8 +909,6 @@ async function memoryPassNow(s, why) {
   }
 }
 // ---------- the skill pass ----------
-// A request that took 5+ tools and worked may teach a skill (brain.mjs). It waits for their next message (or a few
-// quiet minutes): if that says it was wrong, nothing is learned. Kept skills show in the panel's Recent list.
 let pendingLearn = null;
 function queueLearn(messages, used) {
   dropLearn();
@@ -1259,7 +916,6 @@ function queueLearn(messages, used) {
   pendingLearn.timer.unref?.();
 }
 function dropLearn() { if (pendingLearn) { clearTimeout(pendingLearn.timer); pendingLearn = null; } }
-// Their next message arrived: learn from the last request unless it says that one went wrong.
 function nextMessageLearn(words) {
   if (!pendingLearn || !words) return;
   if (soundsWrong(words)) { logLine('skill_learn', { skipped: 'corrected' }); dropLearn(); return; }
@@ -1267,14 +923,14 @@ function nextMessageLearn(words) {
 }
 async function runLearn(why) {
   const p = pendingLearn; dropLearn();
-  if (!p || !config.model || config.learnSkills === false) return;
+  if (!p || !harnessManager.activeId || config.learnSkills === false) return;
   const t0 = Date.now();
   try {
     const used = p.used.map((n) => readSkill(n)).filter(Boolean);
     const { text, model } = await oneShot({ ...(await sideRoute()), system: skillPrompt(userName), text: skillInput({ index: skillIndex(), used, turns: transcript(p.messages, userName, stripNote).slice(-12_000) }) });
     const k = parseSkill(text);
     if (!k) { logLine('skill_learn', { why, model, ms: Date.now() - t0, saved: false }); return; }
-    const s = await saveSkill(k); // checkSkill and key scrubbing happen here; an unsafe one throws
+    const s = await saveSkill(k);
     activity.learned(s.name, !s.created); panel();
     logLine('skill_learn', { why, model, ms: Date.now() - t0, saved: s.slug, updated: !s.created });
   } catch (e) {
@@ -1285,7 +941,9 @@ async function runLearn(why) {
 /** Starts a clean conversation; the one ending gets a memory pass (`why` names it in the log). */
 function freshSession(why) {
   const old = session;
-  session = newSession(config.provider, config.model); liveBlocks.clear(); agent = null; pendingFold = null; lastInput = null; quizDone = null; pruneSessions();
+  session = newSession(harnessManager.activeId, harnessManager.activeId); liveBlocks.clear(); pendingFold = null; lastInput = null; quizDone = null;
+  harnessManager.clearSession();
+  pruneSessions();
   return why && old?.messages.length ? memoryPass(old, why) : Promise.resolve([]);
 }
 
@@ -1363,38 +1021,22 @@ async function pruneUsage() {
   } catch {}
 }
 let lastReply = '', lastFailed = false;
-// The agent for the next request, made or rebuilt if needed: null when ready, else what to tell the user.
-async function readyAgent() {
+async function readyHarness() {
   await resumed;
   await voiceKeysLoaded;
-  await refreshAuth({ cached: true });
-  if (!ensureModel()) { openPanel('model'); return 'Sign in to an AI provider first: I opened the Model page for you. Then ask me again!'; }
-  if (config.provider === 'local') {
-    if (!getModel(config.model)) await syncLocal();
-    const s = serverFor(servers(), config.model), r = s && local.status.get(s.id);
-    if (!getModel(config.model)) {
-      if (!s) return `That model's server isn't on the Model page in ${PANEL} anymore. Pick another model there.`;
-      return r?.ok ? `${s.label} doesn't have ${parseLocalModelId(config.model)?.rawId ?? 'that model'} anymore. Pick another model on the Model page in ${PANEL}.` : /rejected/.test(r?.reason ?? '') ? downNote(s, r.reason) : `${downNote(s, r?.reason)} ${s.custom ? 'Start it' : 'Open it'}, then ask me again!`;
-    }
-    await measureLocal(config.model);
+  await desktopMcpReady;
+  if (!session) {
+    session = newSession(harnessManager.activeId, harnessManager.activeId);
+    liveBlocks.clear();
+    pruneSessions();
   }
-  if (!session) { session = newSession(config.provider, config.model); liveBlocks.clear(); agent = null; pruneSessions(); }
-  if (agentStale && agent) { agent = null; }
-  agentStale = false;
-  let cc;
-  try { cc = await claudeCodeRoute(); } catch (e) { return aloud(problem('reply', e, { who: PROVIDER_LABELS[config.provider] })); }
-  if (agent && agentRoute !== (cc ? 'claude-code' : 'api')) agent = null; // signed in or out of Claude meanwhile
-  if (!agent) {
-    try { const c = await credsFor(); credsBaseUrl = c.baseUrl; credsAccountId = c.accountId; } catch { credsBaseUrl = undefined; credsAccountId = undefined; }
-    makeAgent(cc);
+  if (harnessManager.activeId === 'custom' && !config.customHarness?.command) {
+    openPanel('model');
+    return `Set a custom harness command on the Harness page in ${PANEL} first, or pick an installed CLI harness.`;
   }
   return null;
 }
-// About to be asked (talk keys down, the ask bubble open): Claude Code starts now instead of after the words
-// arrive. Queued like a request, so it never swaps the agent under one that's running.
-function warmUp() {
-  running = running.then(async () => { if (!busy && !(await readyAgent())) agent?.warm?.(); }).catch(() => {});
-}
+function warmUp() {}
 // The front window, looked up when the talk keys are let go: the words take a moment more to arrive.
 let frontSoon = null;
 // The front window for a request, waited for at most 150 ms: a slow helper never holds the request up (it goes
@@ -1405,8 +1047,8 @@ const frontWithin = (p) => new Promise((done) => {
 });
 // Auto-listen: the turn whose reply ended on a question, until the overlay says it's been typed out and said.
 let autoTurn = null;
-// Wake word: the voice helper doesn't listen for "Hey Jarvis" while a reply runs, until the overlay says it's been
-// typed out and said (reply_said), so Jarvis can't wake itself. Let go after a while in case that never comes.
+// Wake word: the voice helper doesn't listen for "Hey Yomna" while a reply runs, until the overlay says it's been
+// typed out and said (reply_said), so Yomna can't wake itself. Let go after a while in case that never comes.
 let wakeHeld = false, wakeHoldTimer = null;
 function holdWake(on) {
   clearTimeout(wakeHoldTimer); wakeHoldTimer = null;
@@ -1421,20 +1063,64 @@ const autoListenOn = () => VOICE_OK && !!config.voice && !!config.autoListen && 
 // typed out and said (reply_said, or 90 s), no field open, and none of that changing for 1.5 s.
 let voiceBusy = false, saidPending = false, saidCap = null;
 const desk = newsDesk({
-  gates: () => ({ busy, queued, barOpen: !!barAsk, voice: voiceBusy || liveCall.busy(), saidPending, autoListen: !!autoTurn, asking: pending.size > 0, onboarding, intro: !!intro, loggingIn: !!loggingIn }),
+  gates: () => ({ busy, queued, barOpen: !!barAsk, voice: voiceBusy || liveCall.busy(), saidPending, autoListen: !!autoTurn, asking: pending.size > 0, onboarding, intro: !!intro }),
   news: () => agents.news(), markTold: (ids) => agents.markTold(ids), userName,
   // An open Live call takes the news itself (at its next quiet moment); otherwise it's a Classic system turn.
   enqueue: (text, ids) => { if (liveCall.news(text)) desk.started(ids); else enqueue(text, { news: ids }); }, say: (text, mood) => say(text, mood),
-  signedIn: () => signedIn.size > 0 && [...signedIn.values()].some(Boolean),
+  signedIn: () => activeHarnessReady(),
 });
 const stir = desk.stir;
-// Live mode (livecall.mjs): a tap of the talk chord opens a Gemini Live call with this same prompt and these same
-// tools; Classic never makes one. The key is the Gemini voice key (or the Model page's Gemini key).
+// Live mode (livecall.mjs): a tap of the talk chord opens a Gemini Live call with this same prompt, the local
+// tools, and delegate_to_harness wired straight to the active background CLI harness.
+const liveDelegations = new Set();
 const liveSystem = () => { const l = livePrompt('', { live: true }); return `${system()}\n\n${l.turn}\n${l.memory}`; };
 const liveCall = createLiveCall({
   makeBrain: async (emit) => {
     const [key] = await voiceKey('gemini').catch(() => [null]);
-    return createLiveBrain({ emit, key, model: config.liveModel || DEFAULT_LIVE_MODEL, voice: liveVoiceOf(config, geminiVoice()), tools, system: liveSystem, speechLang: speechLangId });
+    return createLiveBrain({
+      emit,
+      key,
+      model: config.liveModel || DEFAULT_LIVE_MODEL,
+      voice: liveVoiceOf(config, geminiVoice()),
+      tools,
+      system: liveSystem,
+      speechLang: speechLangId,
+      onDelegate: async ({ prompt: taskPrompt, context }, { signal, news }) => {
+        if (signal?.aborted) return 'Cancelled.';
+        const ac = new AbortController();
+        liveDelegations.add(ac);
+        const fullTask = context ? `${taskPrompt}\n\nContext:\n${context}` : taskPrompt;
+        (async () => {
+          let text = '', errorMsg = '';
+          try {
+            await desktopMcpReady;
+            for await (const ev of harnessManager.send({
+              prompt: fullTask,
+              systemPrompt: system(),
+              cwd: brainDir() || WORKDIR,
+              secondBrainDirs: secondBrainDirs(),
+              mcpConfigPath: desktopMcp?.configPath,
+              allowActions: !!config.allowActions,
+              signal: ac.signal,
+            })) {
+              if (ev.type === 'text_delta') text += ev.text ?? '';
+              else if (ev.type === 'done' && !text && ev.text) text = ev.text;
+              else if (ev.type === 'error') errorMsg = ev.message || 'Harness task failed.';
+            }
+          } catch (err) {
+            if (!ac.signal.aborted) errorMsg = err?.message || String(err);
+          } finally {
+            liveDelegations.delete(ac);
+          }
+          if (ac.signal.aborted) return;
+          const summary = errorMsg
+            ? `Background harness (${activeHarnessLabel()}) error: ${errorMsg}`
+            : `Background harness (${activeHarnessLabel()}) finished: ${(text || 'Done.').trim().slice(0, 1200)}`;
+          if (liveCall.open) news(summary);
+        })();
+        return `Dispatched to ${activeHarnessLabel()} in the background.`;
+      },
+    });
   },
   ui, send, ask, anim: (name) => anim(name),
   toClassic: () => switchVoiceMode('classic'),
@@ -1443,21 +1129,21 @@ const liveCall = createLiveCall({
   log: logLine,
   inkStarted: (id, seg) => ink.started(id, seg),
   // A hung-up call gets the memory pass a Classic conversation gets when it ends (logged as memory, why live_<how>).
-  onEnd: (messages, why) => memoryPass({ id: 'live', messages }, `live_${why}`),
+  onEnd: (messages, why) => {
+    for (const ac of liveDelegations) ac.abort();
+    liveDelegations.clear();
+    memoryPass({ id: 'live', messages }, `live_${why}`);
+  },
 });
 // news: the agent ids this system turn passes on.
 const snoozeListenOn = () => VOICE_OK && !!config.voice && !!config.snoozeListen && voiceReady() && !intro;
+const bareToolName = (name) => String(name ?? '').replace(/^mcp__[^_]+__/, '');
 async function prompt(text, image = null, note = '', byVoice = false, news = null, listenAfter = false) {
-  // What they said, word for word, for the handoffs below (a heavy model, a background agent). System lines aren't theirs.
+  // What they said, word for word, for background agents. System lines aren't theirs.
   turnWords = news || intro || String(text).startsWith('(') ? '' : String(text);
   nextMessageLearn(turnWords);
   skillsUsed.clear();
-  // Retrying after a usage limit: the unanswered message is dropped from the conversation, and the next model is told.
-  const retrying = retryInfo?.text === text ? retryInfo : null, retryCount = retrying?.count ?? 0;
-  if (retrying) { retryInfo = retrying; if (session?.messages?.at(-1)?.role === 'user') session.messages.pop(); agent = null; }
-  const handoff = routeForTurn(turnWords || '(system)');
-  if (retrying) retryInfo = null;
-  const notReady = await readyAgent();
+  const notReady = await readyHarness();
   // Told once its turn starts, however it goes: the corner and the live state still have the result, so no retries.
   desk.started(news);
   if (notReady) return say(notReady, 'concerned');
@@ -1467,37 +1153,31 @@ async function prompt(text, image = null, note = '', byVoice = false, news = nul
   if (!intro && !text.startsWith('(')) activity.asked(text);
   menu();
   controller = new AbortController();
-  agent.setSignal(controller.signal);
-  // "Send an agent to…": the agents' corner hatches one instead of the thought cloud while the brief is written.
   const agentish = !intro && !news && wantsAgent(text);
   turnImage = image;
   ui({ kind: 'agent', e: { type: 'start', ...(agentish ? { agentish: true } : {}) } });
   let hatching = agentish;
   const hatchOff = () => { if (hatching) { hatching = false; ui({ kind: 'agents', e: { type: 'hatch_off' } }); } };
-  // Voice: the socket opens now, while the model thinks; sentences are spoken as soon as each is ready.
   const voice = VOICE_ON() ? speech.start() : (speech.stop(), null);
   turnVoice = voice;
   if (voice && intro) guideVoices.add(voice.id);
   const spoken = voice && new SpeechText((t) => voice.say(t), speech.localOpts?.());
   let stalled = false, watch = null, learnAfter = false;
+  let harnessErr = null;
   try {
-    // Voice: a short first line before a tool ("On it, checking Paris.") is a beat: it's spoken, but not
-    // shown, so the card or bubble starts with the answer. It shows after all if no tool follows.
-    // The hold is for the pre-tool beat only: a short line before a tool call is dropped once the tool starts. It isn't
-    // released at a sentence end, since "On it, checking Paris." is a whole sentence; past 40 characters it's an answer.
     let beatText = voice ? '' : null, trimNext = false;
-    const showText = (text) => {
-      if (trimNext) { text = text.replace(/^\s+/, ''); if (!text) return; trimNext = false; }
-      ui({ kind: 'agent', e: { type: 'text', text } });
+    const showText = (t) => {
+      if (trimNext) { t = t.replace(/^\s+/, ''); if (!t) return; trimNext = false; }
+      ui({ kind: 'agent', e: { type: 'text', text: t } });
     };
     const releaseBeat = (drop) => {
       if (beatText == null) return;
       const t = beatText; beatText = null;
       if (drop && t.trim()) trimNext = true; else if (t) showText(t);
     };
-    const cues = voice ? new CueFilter() : null; // voice cues are for the voice only, never shown
-    const echo = new EchoFilter(); // tool calls written out as text never reach the screen or the voice
-    const thoughts = new ThoughtFilter(); // Gemini's reasoning summary sent as reply text, dropped (reply.mjs)
+    const cues = voice ? new CueFilter() : null;
+    const echo = new EchoFilter();
+    const thoughts = new ThoughtFilter();
     const reply = new ReplyStream((ev) => {
       if (spoken && ev.type === 'emote') spoken.emote(ev.action);
       if (spoken && ev.type === 'text') spoken.push(ev.text);
@@ -1505,173 +1185,155 @@ async function prompt(text, image = null, note = '', byVoice = false, news = nul
       if (cues) { ev = { ...ev, text: cues.push(ev.text) }; if (!ev.text) return; }
       if (beatText == null) return showText(ev.text);
       beatText += ev.text;
-      if (beatText.length > 40 || /\n/.test(beatText)) releaseBeat(false); // too long to be a beat
+      if (beatText.length > 40 || /\n/.test(beatText)) releaseBeat(false);
     });
     const turn = startRequest();
-    logLine('request', { turn, model: config.model, chars: text.length, image: !!image, session: session?.id });
-    const use = { t: Date.now(), model: config.model, calls: 0, tools: 0, in: 0, cacheRead: 0, cacheWrite: 0, out: 0 };
-    const learn = { ok: 0, bad: 0, saved: false }; // for the skill pass: tools that worked, ones that failed
+    const activeHarness = harnessManager.activeId;
+    logLine('request', { turn, harness: activeHarness, chars: text.length, image: !!image, session: session?.id });
+    const use = { t: Date.now(), model: activeHarness, calls: 0, tools: 0, in: 0, cacheRead: 0, cacheWrite: 0, out: 0 };
+    const learn = { ok: 0, bad: 0, saved: false };
     const soon = frontSoon; frontSoon = null;
     frontNow = await frontWithin(soon && Date.now() - soon.at < 8000 ? soon.p : whereNow());
-    // The first spoken request of the day carries the morning briefing (brief.mjs).
     const brief = intro ? null : briefNote({ on: !!config.morningBrief, lastDay: config.briefDay, byVoice, todoist: !!config.briefTodoist, canRead: HANDS_OK, name: userName });
     if (brief) { config.briefDay = brief.day; saveConfig(); logLine('brief', { todoist: !!config.briefTodoist && HANDS_OK }); }
-    const onScreen = [takeQuizNote(), ink.listNote()].filter(Boolean).join(' '); // a quiz's score, lists changed on their cards
-    // They spoke first: untold news rides along with their message, so it's never announced separately afterwards.
+    const onScreen = [takeQuizNote(), ink.listNote()].filter(Boolean).join(' ');
     const along = desk.along(text, { intro: !!intro, news: !!news, agentish });
     const stamped = `[${stampNow()}] ${text}${onScreen ? `\n(${onScreen})` : ''}${along}`;
-    const nudge = !agentish && !intro && !news && !handoff ? delegateNote(text, crewNow(), config.delegate) : '';
+    const nudge = !agentish && !intro && !news ? delegateNote(text, crewNow(), config.delegate) : '';
     const toAgent = agentish ? `${stamped}\n(They asked for an agent: call send_agent.)` : nudge ? `${stamped}\n${nudge}` : stamped;
-    const asked = handoff ? `${toAgent}\n${handoffNote({ userName, assistant: lookName(), reason: handoff.reason, from: handoff.from, kind: handoff.kind, words: turnWords, untilText: handoff.untilText, because: handoff.because })}` : toAgent;
-    const sent = brief ? `${asked}\n(${brief.note})` : asked;
-    // An area snap rides along as an image in the same message.
-    const content = image ? [{ type: 'text', text: `${sent}\n(Attached: the area of the screen I ${note ? 'marked' : 'selected'}.${note ? ` ${note}` : ''})` }, image] : sent;
+    const sent = brief ? `${toAgent}\n(${brief.note})` : toAgent;
+    const userMsgContent = image ? [{ type: 'text', text: `${sent}\n(Attached: the area of the screen I ${note ? 'marked' : 'selected'}.${note ? ` ${note}` : ''})` }, image] : sent;
+    session.messages.push({ role: 'user', content: userMsgContent });
+    const livePrepared = withLive(session.messages).at(-1);
+    const livePromptText = typeof livePrepared?.content === 'string'
+      ? livePrepared.content
+      : (livePrepared?.content ?? []).filter((p) => p.type === 'text').map((p) => p.text).join('\n');
+    const images = image ? [image] : [];
+
     lastReply = ''; lastFailed = false; lastInput = null;
-    let fresh = false; // the reply that matters is the last turn's text (after any tool calls)
-    let writing = null; // the beat timer while a tool call is being written
-    const doneWriting = () => { clearTimeout(writing); writing = null; };
-    // Nothing back from the model for a long while (a hung connection, Claude Code retrying out of sight): give up
-    // and say so, instead of waiting silently forever with every later request queued behind it.
-    // An agent request's words wait until it's clear whether an agent launched: then they're dropped (the launch is
-    // the reply); otherwise they show as usual. Once any agent launches, the rest of the request's words are dropped.
     let hold = agentish ? '' : null, launched = false;
     const release = () => {
       if (hold == null) return;
       const h = hold; hold = null; hatchOff();
-      if (h) { reply.push(h); lastReply = h; fresh = false; }
+      if (h) { reply.push(h); lastReply = h; }
     };
-    // A heading ThoughtFilter held to the end of a model turn turned out to be the answer: it goes out as text would.
     const heldThought = () => {
       const t = echo.push(thoughts.flush());
       if (!t || launched) return;
       if (hold != null) { hold += t; return; }
-      reply.push(t); if (fresh) { lastReply = ''; fresh = false; } lastReply += t;
+      reply.push(t); lastReply += t;
     };
     const ctl = controller;
     watch = stallWatch(STALL_MS, () => { stalled = true; logLine('stalled', { turn, ms: Date.now() - use.t }); ctl.abort(); });
-    for await (const e of agentEvents(agent.prompt(content))) {
+
+    const stream = harnessManager.send({
+      prompt: livePromptText,
+      systemPrompt: system(),
+      cwd: brainDir() || WORKDIR,
+      secondBrainDirs: secondBrainDirs(),
+      mcpConfigPath: desktopMcp?.configPath,
+      allowActions: !!config.allowActions,
+      images,
+      signal: ctl.signal,
+    });
+
+    for await (const e of stream) {
       watch.event(e);
-      if (e.type === 'text_delta') {
-        const t = echo.push(thoughts.push(e.text));
-        if (launched) continue;
+      if (e.type === 'session' && e.sessionId && session) {
+        session.harnessSessionId = e.sessionId;
+      } else if (e.type === 'text_delta') {
+        const t = echo.push(thoughts.push(e.text ?? ''));
+        if (launched || !t) continue;
         if (hold != null) { hold += t; continue; }
-        reply.push(t); if (fresh) { lastReply = ''; fresh = false; } lastReply += t;
-      }
-      else if (e.type === 'turn_end') {
-        doneWriting();
-        heldThought();
-        if (hold != null) { hold += echo.flush(); if (e.stopReason !== 'tool_use') release(); }
-        fresh = true;
-        { const t = echo.flush(); if (!launched) { reply.push(t); lastReply += t; } }
-        reply.endTurn();
+        reply.push(t); lastReply += t;
+      } else if (e.type === 'thinking_delta') {
+        ui({ kind: 'agent', e: { type: 'thinking', text: e.text ?? '' } });
+      } else if (e.type === 'tool_start') {
+        const name = bareToolName(e.name);
+        const callId = e.id ?? `t_${++use.tools}`;
+        if (name !== 'send_agent') release();
         spoken?.flush();
-        releaseBeat(false);
-        trail.settle();
-        // Cache health, for the log: how much of each call was read from the prompt cache.
-        const u = e.usage ?? {};
-        const seen = (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
-        if (seen) lastInput = { session: session?.id, tokens: seen, measured: true };
-        use.calls++; use.in += u.inputTokens ?? 0; use.cacheRead += u.cacheRead ?? 0; use.cacheWrite += u.cacheWrite ?? 0; use.out += u.outputTokens ?? 0;
-        if (process.env.JARVIS_USAGE) console.error(`[usage] in=${u.inputTokens ?? '?'} cacheRead=${u.cacheRead ?? 0} cacheWrite=${u.cacheWrite ?? 0} out=${u.outputTokens ?? '?'}`);
-      }
-      else if (e.type === 'thinking_delta') ui({ kind: 'agent', e: { type: 'thinking', text: e.text } });
-      // The opening line's last sentence waits for more text before it's spoken; a tool call starting means none is
-      // coming, so say it now rather than once the call has fully streamed (a drawing can take 15 s on some models).
-      else if (e.type === 'toolcall_delta') {
-        spoken?.flush();
-        // Still writing a tool call after a second with nothing said (a drawing on a slow model): a short beat.
-        writing ??= setTimeout(() => { if (busy && turnVoice === voice) voice?.beat(); }, 1000); // not after the request ended
-      }
-      else if (e.type === 'tool_call_start') {
-        if (e.name !== 'send_agent') release();
-        doneWriting();
-        spoken?.flush(); // a beat before a tool is said now, not after the tool
         releaseBeat(true);
-        if (SLOW_TOOLS.has(e.name)) voice?.beat(); // nothing said yet: "One sec." so it's never silent
+        if (SLOW_TOOLS.has(name)) voice?.beat();
         use.tools++;
-        noteTool(e.name);
-        logLine('tool', toolLog({ turn, id: e.toolCallId, name: e.name, args: e.args }));
-        toolNames.set(e.toolCallId, e.name);
-        if (process.env.JARVIS_USAGE) { toolT.set(e.toolCallId, Date.now()); console.error(`[tool] ${e.name} ${JSON.stringify(e.args ?? {}).slice(0, 160)}`); }
-        ui({ kind: 'agent', e: { type: 'tool', id: e.toolCallId, anim: anim(e.name, e.args ?? {}) } });
-        if (activity.start(e.toolCallId, e.name, e.args ?? {})) panel();
-      } else if (e.type === 'tool_call_end') {
-        if (toolNames.get(e.toolCallId) === 'send_agent') { if (e.isError) release(); else { launched = true; hold = null; hatching = false; } }
-        { const n = toolNames.get(e.toolCallId); if (e.isError) learn.bad++; else if (n !== 'plan_steps' && n !== 'use_skill') learn.ok++; if (n === 'save_skill' && !e.isError) learn.saved = true; }
-        activity.end(e.toolCallId, e.isError); panel();
-        logLine(e.isError ? 'tool_error' : 'tool_done', { turn, id: e.toolCallId, ms: e.durationMs, result: String(e.result ?? '').replace(/\s+/g, ' ').slice(0, e.isError ? 1000 : 400) });
-        if (e.isError && toolNames.get(e.toolCallId) !== 'plan_steps') trail.error(typeof e.result === 'string' ? e.result : '');
-        if (process.env.JARVIS_USAGE) console.error(`[tool_end] ${e.isError ? 'ERROR' : 'ok'} ${Date.now() - (toolT.get(e.toolCallId) ?? Date.now())}ms ${String(typeof e.result === 'string' ? e.result : JSON.stringify(e.result ?? '')).replace(/\s+/g, ' ').slice(0, 160)}`);
-        ui({ kind: 'agent', e: { type: 'tool_end', id: e.toolCallId, isError: e.isError } });
+        noteTool(name);
+        logLine('tool', toolLog({ turn, id: callId, name, args: e.args }));
+        toolNames.set(callId, name);
+        ui({ kind: 'agent', e: { type: 'tool', id: callId, anim: anim(name, e.args ?? {}) } });
+        if (activity.start(callId, name, e.args ?? {})) panel();
+      } else if (e.type === 'tool_end') {
+        const callId = e.id ?? '';
+        const name = toolNames.get(callId) ?? bareToolName(e.name);
+        const isError = e.ok === false;
+        if (name === 'send_agent') { if (isError) release(); else { launched = true; hold = null; hatching = false; } }
+        if (isError) learn.bad++; else if (name !== 'plan_steps' && name !== 'use_skill') learn.ok++;
+        if (name === 'save_skill' && !isError) learn.saved = true;
+        activity.end(callId, isError); panel();
+        logLine(isError ? 'tool_error' : 'tool_done', { turn, id: callId, result: String(e.output ?? '').replace(/\s+/g, ' ').slice(0, isError ? 1000 : 400) });
+        if (isError && name !== 'plan_steps') trail.error(typeof e.output === 'string' ? e.output : '');
+        ui({ kind: 'agent', e: { type: 'tool_end', id: callId, isError } });
+      } else if (e.type === 'done') {
+        use.calls++;
+        if (!lastReply && e.text && !launched) {
+          const t = echo.push(thoughts.push(e.text));
+          if (t) {
+            if (hold != null) hold += t;
+            else { reply.push(t); lastReply += t; }
+          }
+        }
+      } else if (e.type === 'error') {
+        harnessErr = e;
+        throw new Error(e.message || `Harness ${activeHarness} failed.`);
       }
-      else if (e.type === 'server_tool_call' && (spoken?.flush(), releaseBeat(true), voice?.beat(), true)) { ui({ kind: 'agent', e: { type: 'tool', id: e.id, anim: anim('web_search', {}) } }); activity.start(e.id, 'web_search', {}); panel(); }
-      else if (e.type === 'server_tool_result') { ui({ kind: 'agent', e: { type: 'tool_end', id: e.toolUseId ?? e.id, isError: false } }); activity.end(e.toolUseId ?? e.id, false); panel(); }
-      else if (e.type === 'error') throw e.error;
     }
-    doneWriting();
+
     heldThought();
     if (hold != null) { hold += echo.flush(); release(); }
-    { const t = echo.flush(); if (!launched) { reply.push(t); lastReply += t; } }
+    { const t = echo.flush(); if (!launched && t) { reply.push(t); lastReply += t; } }
     reply.finish();
     const held = cues?.flush(); if (held) showText(held);
     releaseBeat(false);
-    // Stop from the menu ends the stream quietly; an interruption by a new request (quiet) doesn't count.
+    if (lastReply) session.messages.push({ role: 'assistant', content: lastReply });
     if (controller.signal.aborted && !quiet) lastFailed = true;
     if (controller.signal.aborted) voice?.abort(); else { spoken?.flush(); voice?.end(); }
     trail.end();
     ink.endRequest();
-    // Asked by voice and answered with a question: the overlay opens the mic once the reply has been typed and said.
-    // A reminder nudge, with "Listen after reminders" on: the same hands-free listen, for "snooze 10 minutes".
     const listen = !stalled && !controller.signal.aborted && ((byVoice && autoListenOn() && listensAfter(lastReply, config.listenEvery)) || (listenAfter && snoozeListenOn())) ? { turn, speech: voice?.id ?? null } : null;
     autoTurn = listen ? turn : null;
     ui({ kind: 'agent', e: stalled ? { type: 'error', message: stallMessage(), speech: voice?.id ?? null } : { type: 'done', speech: voice?.id ?? null, ...(listen ? { listen } : {}) } });
+    use.out = Math.round(lastReply.length / 4);
+    use.in = Math.round(livePromptText.length / 4);
     logUsage({ ...use, ms: Date.now() - use.t });
     learnAfter = !config.lite && shouldLearn({ on: config.learnSkills !== false, okTools: learn.ok, errors: learn.bad, aborted: stalled || controller.signal.aborted, system: !turnWords, saved: learn.saved });
-    logLine('request_done', { turn, ms: Date.now() - use.t, calls: use.calls, tools: use.tools, in: use.in, cacheRead: use.cacheRead, cacheWrite: use.cacheWrite, out: use.out });
+    logLine('request_done', { turn, ms: Date.now() - use.t, calls: use.calls, tools: use.tools, harness: activeHarness });
   } catch (err) {
     lastFailed = true;
     hatchOff();
     if (controller.signal.aborted) voice?.abort(); else { spoken?.flush(); voice?.end(); }
-    // A usage limit: note when it resets, and carry the request on with the next model that's free. The next model
-    // opens its reply by saying so (the handoff note), so they're told in its own voice.
-    const lim = controller.signal.aborted || stalled || config.provider === 'local' || !(config.hybrid || config.backups) ? null : limitFrom(err);
-    if (lim) {
-      // A model that's gone from the account is skipped on its own; anything else takes its whole platform out for a while.
-      limits.mark(lim.kind === 'missing' ? `${config.provider}:${config.model}` : config.provider, lim.until, lim.kind);
-      logLine('limit', { provider: config.provider, model: config.model, kind: lim.kind, until: lim.until });
-      if (retryCount < 2 && firstFree(chainOrder(), limits).pick) {
-        retryNext = { text, image, note, byVoice, listenAfter, news, info: { text, from: modelName(config.model), untilText: untilWords(lim.until), kind: lim.kind, count: retryCount + 1 } };
-      }
-    }
-    if (retryNext) ui({ kind: 'agent', e: { type: 'done' } });
-    else if (controller.signal.aborted && quiet) ui({ kind: 'agent', e: { type: 'done' } });
-    else {
-      const msg = stalled ? stallMessage() : controller.signal.aborted ? 'Okay, stopping.' : aloud(problem('reply', err, { who: PROVIDER_LABELS[config.provider] }));
+    if (controller.signal.aborted && quiet) {
+      ui({ kind: 'agent', e: { type: 'done' } });
+    } else {
+      const msg = stalled ? stallMessage() : controller.signal.aborted ? 'Okay, stopping.' : aloud(problem('reply', err, { who: activeHarnessLabel() }));
       console.error('prompt failed', err);
+      const suggestSwitch = !stalled && !controller.signal.aborted && !!(harnessErr?.suggestSwitch || ['timeout', 'auth', 'not_installed'].includes(harnessErr?.reason));
+      if (suggestSwitch) {
+        ui({ kind: 'harness_error', reason: harnessErr?.reason || 'error', message: harnessErr?.message || msg, suggestSwitch: true });
+      }
       ui({ kind: 'agent', e: { type: 'error', message: msg, speech: voice?.id ?? null } });
     }
   } finally {
     watch?.stop();
     busy = false; turnVoice = null; turnImage = null;
     stir(); saidCap = setTimeout(() => { saidPending = false; stir(); }, 90_000);
-    // A tool cut off by Stop never reports back: end its tag too, or the Sidekick kept showing it ("looking at
-    // CapCut") on every later request, with their own tags queued behind it.
     for (const id of activity.stopped()) ui({ kind: 'agent', e: { type: 'tool_end', id, isError: true } });
     syncSession();
-    // This request's turns, once they're in the session: the skill pass may learn from them (after their next message).
     if (learnAfter && session) { const from = session.messages.findLastIndex((m) => m.role === 'user'); if (from >= 0) queueLearn(session.messages.slice(from), [...skillsUsed]); }
-    if (stalled) agent = null; // the next request starts on a fresh connection, from the saved conversation
-    // No usage reported: estimate what the last call sent.
     if (!lastInput && session) lastInput = { session: session.id, tokens: approxTokens(session.messages) + Math.round(system().length / 3.6), measured: false };
     menu();
   }
-  if (retryNext) {
-    const r = retryNext; retryNext = null; retryInfo = r.info;
-    enqueue(r.text, { image: r.image, note: r.note, byVoice: r.byVoice, listenAfter: r.listenAfter, news: r.news });
-  }
 }
 const STALL_MS = 120_000;
-const stallMessage = () => `${PROVIDER_LABELS[config.provider] ?? 'The AI'} stopped answering for two minutes, so I gave up on that one. Ask me again?`;
+const stallMessage = () => `${activeHarnessLabel()} stopped answering for two minutes, so I gave up on that one. Ask me again?`;
 
 // ---------- asking the user (input bubble in the overlay) ----------
 let askSeq = 0;
@@ -1684,123 +1346,12 @@ function ask(opts, signal) {
 function showAsk(opts, signal) {
   const id = `a${++askSeq}`;
   const to = onboarding ? ob : ui;
-  // The setup guide has no buttons: its answer box takes a typed y.
   if (onboarding && opts.choices) opts = { ...opts, placeholder: `${opts.placeholder} Type y to allow.` };
   to({ kind: 'ask', id, ...opts });
   return new Promise((resolve) => {
     pending.set(id, resolve);
-    // Another route finished first (e.g. the OAuth callback server): close the input bubble.
     signal?.addEventListener('abort', () => { pending.delete(id); to({ kind: 'cancel_ask', id }); resolve(null); }, { once: true });
   });
-}
-
-// ---------- logins ----------
-// One sign-in at a time; starting another (or cancelling from the guide) supersedes the current one and stops it
-// for real (its signal: ChatGPT's frees the callback port at once). The guide names each attempt.
-let loggingIn = null, loginStatus = '', loginSeq = 0, loginRun = null;
-function cancelLogin(id) {
-  if (!loginRun || (id != null && loginRun.id !== id)) return;
-  loginRun.controller.abort();
-  loginRun = null; loggingIn = null; loginStatus = ''; menu();
-}
-async function oauthLogin(provider, id = `l${++loginSeq}`) {
-  cancelLogin();
-  const run = { id, provider, controller: new AbortController() };
-  loginRun = run; loggingIn = provider; loginStatus = ''; menu();
-  const live = () => loginRun === run;
-  const tell = (msg) => { if (live() && onboarding) ob({ kind: 'login', provider, id, ...msg }); };
-  try {
-    const creds = await OAUTH[provider]({
-      onOpenUrl: (url) => {
-        if (!live()) return;
-        openUrl(url);
-        if (onboarding) tell({ phase: 'browser' });
-        else say(`Opening ${PROVIDER_LABELS[provider]} in your browser. Sign in there!`, 'happy');
-      },
-      onPromptCode: async (message, signal) => {
-        // ChatGPT's browser comes back to this computer by itself; pasting is only for a browser on another machine.
-        // Refusing here leaves gg-core waiting on the browser alone, and this error is what shows if that fails.
-        if (provider === 'openai') throw new Error("ChatGPT sign-in didn't come back from the browser. Try again.");
-        const text = await ask({ prompt: 'Paste the code from the browser here.', placeholder: 'code#state' }, signal ? AbortSignal.any([signal, run.controller.signal]) : run.controller.signal);
-        if (signal?.aborted) return '';
-        if (text == null) throw new Error('Sign-in cancelled.');
-        return text;
-      },
-      // Claude's: "Downloading Claude Code… 40% (56 of 140 MB)", then "Opening Claude sign-in…".
-      onStatus: (m) => {
-        console.error('[oauth]', m);
-        if (!live() || m === loginStatus) return;
-        loginStatus = m; tell({ phase: 'status', text: m }); panel();
-      },
-    }, run.controller.signal);
-    if (!live()) return;
-    // Claude Code keeps Claude's token itself (signInWithClaudeCode saved the marker).
-    if (provider !== 'anthropic') await auth.setCredentials(dualAuthProvider(provider)?.oauthKey ?? provider, creds);
-    await refreshAuth();
-    if (!config.provider || !signedIn.get(config.provider)) { config.provider = null; ensureModel(); }
-    agent = null;
-    if (onboarding) { tell({ phase: 'done' }); obState(); }
-    else {
-      say(`Signed in to ${PROVIDER_LABELS[provider]}. Let's go!`, 'happy');
-      ui({ kind: 'agent', e: { type: 'emote', action: 'hype' } });
-    }
-  } catch (err) {
-    if (!live()) return;
-    console.error('login failed', err);
-    // What OpenAI said when it refused the one-time code, so a report of it can be answered.
-    if (err?.name === 'ChatGPTSignInError') logLine('signin_refused', { provider, reason: String(err.reason ?? ''), status: err.status ?? null, detail: redact(String(err.detail ?? '')).slice(0, 300), registration: err.returning ? 'returning' : 'new', retried: !!err.retried, callbackToExchangeMs: err.callbackToExchangeMs ?? null });
-    const p = problem('sign-in', err, { who: SIGNIN_NAMES[provider] ?? PROVIDER_LABELS[provider] });
-    if (onboarding) tell({ phase: 'error', error: p.text, ...linked(p) });
-    else say(p.text, 'concerned');
-  } finally {
-    if (live()) { loginRun = null; loggingIn = null; loginStatus = ''; menu(); }
-  }
-}
-
-// `id`: a provider, or one kind of its key ('kimi-code' vs 'moonshot', as keyKinds lists them).
-async function apiKeyLogin(id, given) {
-  const provider = storageKeyProvider(id);
-  const meta = AUTH_PROVIDERS.find((p) => p.value === provider);
-  if (!meta?.methods?.includes('apikey')) return;
-  const variant = meta.apiKeyVariants?.find((v) => v.key === id) ?? (id === provider ? meta.apiKeyVariants?.[0] : null);
-  if (variant === null) return;
-  const key = given ?? (await ask({ prompt: `Paste your ${PROVIDER_LABELS[provider] ?? provider} API key`, placeholder: 'API key', mask: true }));
-  if (!key?.trim()) return;
-  const baseUrl = variant?.baseUrl ?? meta.apiKeyBaseUrl;
-  await auth.setCredentials(variant?.key ?? provider, { accessToken: key.trim(), refreshToken: '', expiresAt: Date.now() + 100 * 365 * 864e5, ...(baseUrl ? { baseUrl } : {}) });
-  await refreshAuth(); ensureModel(); agent = null;
-  if (CATALOG_PROVIDERS.includes(provider)) refreshCatalogs(provider);
-  // A Gemini key for the AI speaks too, unless the voice has a key of its own.
-  if (provider === 'gemini') await syncGeminiVoiceKey();
-  menu();
-  if (onboarding) { ob({ kind: 'login', provider: id, phase: 'done' }); obState(); }
-  else say(`Got it. ${PROVIDER_LABELS[provider]} is connected.`, 'happy');
-}
-
-// Removes a provider from Jarvis: its sign-in and every kind of key it has saved (or Ollama's connection).
-async function signOut(provider) {
-  if (!MENU_PROVIDERS.includes(provider)) return;
-  const label = PROVIDER_LABELS[provider] ?? provider;
-  if (loggingIn === provider) cancelLogin();
-  try {
-    if (provider === 'local') { for (const x of servers()) { await auth.removeLocalEndpoint(x.id); forgetLocal(x.id); } local.status.clear(); }
-    else {
-      // Claude Code here is Jarvis' own copy, so this signs only Jarvis out.
-      if (provider === 'anthropic' && await auth.hasClaudeCodeLogin()) await signOutOfClaudeCode(auth);
-      const plan = provider === 'openai' ? await auth.getCredentials(OPENAI_CHATGPT_KEY).catch(() => null) : null;
-      for (const k of accountKeys(provider)) await auth.clearCredentials(k);
-      if (plan) revokeChatGPTSignIn(plan).catch(() => {});
-    }
-  } catch (e) {
-    console.error('sign out', e);
-    const text = `I couldn't remove ${label}. Try again in a moment.`;
-    say(text, 'concerned'); return panelNote(text, true);
-  }
-  await refreshAuth();
-  if (provider === 'gemini') await syncGeminiVoiceKey();
-  if (config.provider === provider || !signedIn.get(config.provider)) { config.provider = null; config.model = null; ensureModel(); saveConfig(); }
-  agent = null; menu();
-  say(`${label} is removed.`, 'happy'); panelNote(`${label} is removed.`);
 }
 
 function openUrl(url) {
@@ -1810,18 +1361,16 @@ function openUrl(url) {
 }
 
 // ---------- replies: text only, or voice and text ----------
-// A new look brings its voice: it greets you in it (its "One sec." beats are made again).
 function setLook(l) {
   if (!LOOKS.some(([id]) => id === l)) return;
   const changed = l !== config.look;
   config.look = l; saveConfig();
-  agentStale = true; // its name is in the prompt
-  // Each look has its own voice with every service.
-  if (tts().id === 'fish') speech.setVoice(lookVoice());
+  agentStale = true;
+  if (tts().id === 'local') speech.setVoice(config.localTtsVoice || DEFAULT_LOCAL_VOICE);
+  else if (tts().id === 'edge') speech.setVoice(config.edgeTtsVoice || DEFAULT_EDGE_VOICE);
   else if (tts().id === 'gemini') speech.setVoice(geminiVoice());
   else speech.setLocalVoice(studioVoice());
   ui({ kind: 'look', look: l }); menu();
-  // Spoken only: the picker shows the words. Not over a reply, and a quick run of picks only says the last one.
   if (changed && VOICE_ON() && !busy) {
     speech.stop();
     const v = speech.start();
@@ -1832,12 +1381,15 @@ function setLook(l) {
 
 async function setReplies(mode) {
   await voiceKeysLoaded;
-  if (mode === 'voice' && !speech.on) return voiceKeyLogin({ thenVoice: true });
-  if (mode === 'voice' && tts().local && !(await studioReady())) return;
+  if (mode === 'voice' && !speech.on) {
+    if (tts().keyless) await useTts(tts().id);
+    else return voiceKeyLogin({ thenVoice: true });
+  }
+  if (mode === 'voice' && tts().id === 'voicestudio' && !(await studioReady())) return;
   if (config.replies === mode) return;
   config.replies = mode; saveConfig();
-  agentStale = true; // the spoken and written styles are different prompts
-  if (mode === 'text') { speech.stop(); speech.stopWarm?.(); } // no spoken replies: VoiceStudio isn't kept warm either
+  agentStale = true;
+  if (mode === 'text') { speech.stop(); speech.stopWarm?.(); }
   menu(); if (onboarding) obState();
   if (mode === 'voice') speakLine('Voice is on. This is how I sound.');
   else say('Text only from now on.', 'happy');
@@ -1847,7 +1399,7 @@ async function setReplies(mode) {
 function speakLine(text, mood = 'happy') {
   say(text, mood);
   const v = config.replies === 'voice' ? speech.start() : null;
-  if (v && onboarding) guideVoices.add(v.id); // heard in the setup guide, where it was switched on
+  if (v && onboarding) guideVoices.add(v.id);
   if (v) { v.say(text); v.end(); }
 }
 
@@ -1856,14 +1408,43 @@ async function setTts(id) {
   if (!TTS[id] || id === tts().id) return;
   await voiceKeysLoaded;
   config.tts = id; saveConfig();
-  agentStale = true; // with no key for it yet, replies are written for bubbles until there is one
+  agentStale = true;
   await useTts(id);
   menu(); if (onboarding) obState();
-  if (TTS[id].local) {
+  if (id === 'voicestudio') {
     if (!(await studioReady())) return;
     if (!VOICE_ON()) return say('VoiceStudio is ready. Turn on Voice and text to hear it.', 'happy');
+  } else if (id === 'local') {
+    await refreshLocalTtsStatus();
+    if (!VOICE_ON() && config.replies !== 'voice') {
+      config.replies = 'voice'; saveConfig(); menu();
+    }
+  } else if (id === 'edge') {
+    if (!VOICE_ON() && config.replies !== 'voice') {
+      config.replies = 'voice'; saveConfig(); menu();
+    }
   }
   if (VOICE_ON()) speakLine('This is how I sound.');
+}
+
+function setLocalTtsVoice(id) {
+  if (!LOCAL_VOICES.some((v) => v.id === id) || id === config.localTtsVoice) return;
+  config.localTtsVoice = id;
+  saveConfig();
+  if (tts().id === 'local') speech.setVoice(id);
+  localTtsDownload.status = isTtsReady(ttsModelDir(id), id) ? 'ready' : 'idle';
+  localTtsDownload.voice = id;
+  menu(); if (onboarding) obState();
+  if (tts().id === 'local' && VOICE_ON()) speakLine('This is how I sound.');
+}
+
+function setEdgeTtsVoice(id) {
+  if (!EDGE_VOICES.some((v) => v.id === id) || id === config.edgeTtsVoice) return;
+  config.edgeTtsVoice = id;
+  saveConfig();
+  if (tts().id === 'edge') speech.setVoice(id);
+  menu(); if (onboarding) obState();
+  if (tts().id === 'edge' && VOICE_ON()) speakLine('This is how I sound.');
 }
 
 // VoiceStudio checked now; when it isn't ready, the reason is said (and shown where it was asked from).
@@ -1874,18 +1455,16 @@ async function studioReady() {
   say(s.message, 'concerned'); panelNote(s.message, true);
   return false;
 }
-// 'default': the engine's own voice. Otherwise a saved VoiceStudio voice id; once the list is known, only those.
 function setStudioVoice(id) {
   const known = speech.local?.voices;
   if (id === 'default') id = null;
   else if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(id) || id.includes('..') || (known?.length && !known.some((v) => v.id === id))) return;
   if (id === studioVoice()) return;
-  config.studioVoices = { ...config.studioVoices, [config.look]: id }; saveConfig(); // this look's
+  config.studioVoices = { ...config.studioVoices, [config.look]: id }; saveConfig();
   speech.setLocalVoice(id);
   menu(); if (onboarding) obState();
-  if (tts().local && VOICE_ON()) speakLine('This is my new voice.');
+  if (tts().id === 'voicestudio' && VOICE_ON()) speakLine('This is my new voice.');
 }
-// VoiceStudio for the Voice page and the guide: checked yet, ready or why not, its engine, and the voices saved there.
 const studioState = () => {
   const l = speech.local;
   if (!l) return { checking: true, voice: speech.localVoice };
@@ -1894,64 +1473,65 @@ const studioState = () => {
 
 function setGeminiVoice(v) {
   if (!GEMINI_VOICES.some((x) => x.id === v) || v === geminiVoice()) return;
-  config.geminiVoices = { ...config.geminiVoices, [config.look]: v }; saveConfig(); // this look's
+  config.geminiVoices = { ...config.geminiVoices, [config.look]: v }; saveConfig();
   if (tts().id === 'gemini') speech.setVoice(v);
   menu(); if (onboarding) obState();
   if (tts().id === 'gemini' && VOICE_ON()) speakLine('This is how I sound.');
 }
 
-async function removeVoiceKey(id = tts().id) {
+async function removeVoiceKey(id = 'gemini') {
   const t = TTS[id];
-  if (!t) return;
+  if (!t || t.keyless || !t.secret) return;
   try { await secrets.delete(t.secret); } catch { return say(`I couldn't remove the key${MAC ? ' from your Keychain' : LINUX ? ' from your keyring' : ''}. Try again in a moment.`, 'concerned'); }
   if (config[`${id}KeySaved`]) { config[`${id}KeySaved`] = false; saveConfig(); }
   ttsKeys[id] = false;
-  const used = t === tts();
-  if (used) { speech.stop(); await useTts(id); } // Gemini falls back to the AI's Gemini key, if there is one
-  else ttsKeys[id] = (await voiceKey(id).catch(() => [null, false]))[1];
-  if (used && !speech.on && config.replies === 'voice') { config.replies = 'text'; saveConfig(); agentStale = true; }
+  if (tts().id === id) {
+    speech.stop();
+    config.tts = 'local';
+    saveConfig();
+    await useTts('local');
+  }
   menu();
-  say(`${t.name} key removed.${ttsKeys[id] === 'shared' ? " I'll use the Gemini key from the Model page." : used ? ' Replies are text only.' : ''}`, 'happy');
+  say(`${t.name} key removed. Switched replies back to local keyless voice.`, 'happy');
 }
 
-// A key for Fish Audio or Gemini: checked, saved, and that service is then the one that speaks.
-// note(text, bad, problem): typed into the panel or the setup guide, so how it went shows there too, next to the field.
 const KEY_STORE = MAC ? 'Keychain' : LINUX ? 'keyring' : '';
-async function voiceKeyLogin({ provider = tts().id, thenVoice = false, given = null, note = null } = {}) {
+async function voiceKeyLogin({ provider = 'gemini', thenVoice = false, given = null, note = null } = {}) {
   const t = TTS[provider];
-  if (!t) return;
-  const say = note ? (text, mood, p) => { sayOut(text, mood); note(text, mood === 'concerned', p); } : sayOut;
+  if (!t || t.keyless) return;
+  const sayMsg = note ? (text, mood, p) => { say(text, mood); note(text, mood === 'concerned', p); } : say;
   const key = (given ?? (await ask({ prompt: `Paste your ${t.name} API key`, placeholder: `${t.name} API key`, mask: true })))?.trim();
   if (!key) return note?.(`Paste your ${t.name} key first.`, true);
-  if (!/^[\x21-\x7e]{8,512}$/.test(key)) return say(`That doesn't look like a ${t.name} key. Copy it again from ${t.site}.`, 'concerned');
+  if (!/^[\x21-\x7e]{8,512}$/.test(key)) return sayMsg(`That doesn't look like a ${t.name} key. Copy it again from ${t.site}.`, 'concerned');
   const was = tts().id;
   await useTts(t.id, key);
   const a = await speech.check();
   if (!a.ok) {
     await useTts(was);
-    return say(a.reason === 'key' ? `That key didn't work. Copy it again from ${t.site} and retry.` : `I couldn't reach ${t.name}. Check the connection and try again.`, 'concerned');
+    return sayMsg(a.reason === 'key' ? `That key didn't work. Copy it again from ${t.site} and retry.` : `I couldn't reach ${t.name}. Check the connection and try again.`, 'concerned');
   }
-  // Gemini's account check passes for keys it then won't speak with (a region it refuses, say): try a word first.
   const tried = t.id === 'gemini' ? await speech.probe() : { ok: true };
   if (!tried.ok && tried.status >= 400 && tried.status < 500 && tried.status !== 429) {
     await useTts(was);
-    return say(`${t.name} took that key but won't speak with it: ${voiceWhy(tried.message)}.`, 'concerned');
+    return sayMsg(`${t.name} took that key but won't speak with it: ${voiceWhy(tried.message)}.`, 'concerned');
   }
   try { await secrets.set(t.secret, key); config[`${t.id}KeySaved`] = true; } catch (e) {
     console.error('voice key save', e.message);
     await useTts(was);
     const p = problem('key', e, { store: KEY_STORE });
-    return say(p.text, 'concerned', p);
+    return sayMsg(p.text, 'concerned', p);
   }
   ttsKeys[t.id] = 'own';
-  config.tts = t.id;
-  if (thenVoice || config.replies !== 'voice') config.replies = 'voice';
+  if (thenVoice) { config.tts = t.id; config.replies = 'voice'; }
+  else {
+    await useTts(was);
+  }
   saveConfig(); agentStale = true;
   menu(); if (onboarding) obState();
-  voiceProblemAt = 0; // a new key's first failure is said straight away
-  if (!tried.ok) return say(`${t.name} key saved, but it won't speak yet: ${voiceWhy(tried.message)}. Replies are text until it does.`, 'concerned');
-  note?.(`${t.name} key saved. Voice is on.`);
-  speakLine(speech.model.endsWith('-free') ? "Voice is on, on Fish Audio's free model since the account has no credit." : 'Voice is on. This is how I sound.');
+  voiceProblemAt = 0;
+  if (!tried.ok) return sayMsg(`${t.name} key saved, but it won't speak yet: ${voiceWhy(tried.message)}.`, 'concerned');
+  note?.(`${t.name} key saved.`);
+  if (thenVoice) speakLine('Voice is on. This is how I sound.');
 }
 
 // ---------- updates ----------
@@ -2060,7 +1640,7 @@ async function focusTick() {
     return;
   }
   // A nudge waits while a conversation is going on; the next look decides again.
-  if (r.nudge && !busy && !onboarding && !loggingIn) {
+  if (r.nudge && !busy && !onboarding) {
     logLine('focus', { nudge: true });
     const left = Math.max(1, Math.round((b.until - Date.now()) / 60_000));
     enqueue(`(System, not ${userName}: they're in a focus block${b.task ? ` on ${b.task}` : ''} with ${left} min left, but have been on ${r.nudge} for a bit. Nudge them back playfully in one short sentence, in character: teasing, never scolding. Start with the [remind] tag.)`);
@@ -2078,8 +1658,8 @@ async function syncPass() {
     if (!folderReady(dir)) { syncInfo = { at: syncInfo.at, error: 'the sync folder isn\'t there right now' }; return; }
     if (!config.syncDevice) { config.syncDevice = newDevice(); saveConfig(); }
     const snap = syncSnapshot();
-    // Memory written by a newer Jarvis isn't loaded here, so it would read as everything deleted.
-    if (snap.readOnly) { syncInfo = { at: syncInfo.at, error: 'memory here is from a newer Jarvis: update Jarvis on this computer' }; return; }
+    // Memory written by a newer Yomna isn't loaded here, so it would read as everything deleted.
+    if (snap.readOnly) { syncInfo = { at: syncInfo.at, error: 'memory here is from a newer Yomna: update Yomna on this computer' }; return; }
     // Memory here couldn't be read: forget what the last pass saw, so nothing counts as deleted here and the other
     // computers' copy comes back.
     if (!snap.trusted) logLine('sync', { recovering: true });
@@ -2171,9 +1751,7 @@ async function saveDiagnostics() {
   diagnosing = true; menu();
   say('Putting together a diagnostics file…', 'determined');
   try {
-    // The app's own logs (log_stdio in main.rs): beside the activity logs, or in ~/.gg until old data has moved.
-    const gg = existsSync(path.join(LOG_DIR, 'sidekick.log')) ? LOG_DIR : path.join(HOME, '.gg');
-    // Microphones as the system lists them (Windows' come from the voice helper, in the shell's section).
+    const gg = LOG_DIR;
     const audio = MAC ? run('system_profiler', ['SPAudioDataType'], 15000)
       : LINUX ? Promise.all([run('pactl', ['info']), run('pactl', ['list', 'short', 'sources']), run('arecord', ['-l'])]).then((a) => a.join('\n\n'))
         : Promise.resolve('');
@@ -2187,14 +1765,19 @@ async function saveDiagnostics() {
       locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
     const app = {
-      version: VERSION, provider: config.provider, model: config.model, signedIn: [...signedIn].filter(([, on]) => on).map(([p]) => p),
+      version: VERSION,
+      harness: harnessManager.activeId,
+      harnesses: detectedHarnesses.map((h) => ({ id: h.id, installed: !!h.installed, authenticated: !!h.authenticated })),
       busy, sidecarUpMinutes: Math.round(process.uptime() / 6) / 10,
       voice: { on: VOICE_OK && config.voice !== false, needsModel: NEEDS_MODEL, model: { status: voiceModel.status, error: voiceModel.error ?? undefined }, hotkeys: HOTKEYS_OK, keys: keys() },
-      replies: config.replies, tts: tts().id, voiceOn: speech.on, ...(tts().local ? { voicestudio: { ok: speech.local?.ok ?? null, reason: speech.local?.reason ?? null, engine: speech.local?.engine ?? null } } : {}), hands: hasHands(process.platform, process.env.JARVIS_HANDS), handsPath: process.env.JARVIS_HANDS ? 'set' : 'none',
+      replies: config.replies, tts: tts().id, voiceOn: speech.on,
+      ...(tts().id === 'local' ? { localTts: localTtsDownload.status } : {}),
+      ...(tts().id === 'voicestudio' ? { voicestudio: { ok: speech.local?.ok ?? null, reason: speech.local?.reason ?? null, engine: speech.local?.engine ?? null } } : {}),
+      hands: hasHands(process.platform, process.env.YOMNA_HANDS), handsPath: process.env.YOMNA_HANDS ? 'set' : 'none',
       update: { available: update.available, result: update.result }, onboarded: config.onboarded, look: config.look, size: config.size,
     };
     const sections = [
-      ['System', system], ['Jarvis', app], ['Screens, tray, panel, helpers and permissions (from the app)', shellOut],
+      ['System', system], ['Yomna', app], ['Screens, tray, panel, helpers and permissions (from the app)', shellOut],
       ...(audioText ? [['Audio devices (from the system)', audioText]] : []),
       ['Settings (secrets and names removed)', scrubConfig(config)],
       ['Agent log (sidekick.log)', await tail(path.join(gg, 'sidekick.log'), 400_000)],
@@ -2207,7 +1790,7 @@ async function saveDiagnostics() {
     logLine('diagnostics', { bytes: (await fs.stat(file)).size });
     reveal(file);
     const where = path.basename(path.dirname(file)) || 'your home folder';
-    say(`Saved ${path.basename(file)} in ${where}. Attach it to an issue at github.com/EricTechPro/jarvis/issues, or send it to whoever is helping you.`, 'happy');
+    say(`Saved ${path.basename(file)} in ${where}. Attach it to an issue at github.com/aammo1/yomna/issues, or send it to whoever is helping you.`, 'happy');
     panelNote(`Saved ${path.basename(file)} in ${where}.`);
   } catch (e) {
     console.error('diagnostics', e);
@@ -2219,10 +1802,9 @@ async function saveDiagnostics() {
   }
 }
 
-// The right-click menu: the basics. Everything else (memory, model, settings, updates) is in the panel.
+// The right-click menu: the basics. Everything else (memory, harness, settings, updates) is in the panel.
 function menu() {
-  const current = getModel(config.model);
-  const status = busy ? `${lookName()} is working…` : loggingIn ? `Signing in to ${PROVIDER_LABELS[loggingIn]}…` : current ? `${current.name} · ${PROVIDER_LABELS[config.provider] ?? config.provider}` : 'Not signed in';
+  const status = busy ? `${lookName()} is working…` : activeHarnessReady() ? activeHarnessLabel() : `${activeHarnessLabel()} (setup needed)`;
   const items = [
     { id: 'status', label: status, enabled: false },
     { sep: true },
@@ -2232,9 +1814,9 @@ function menu() {
     ...(SNAP_OK ? [{ id: 'snap', label: 'Ask About an Area…', accel: keys().snap }] : []),
     { id: 'stop', label: 'Stop', enabled: busy },
     { id: 'diagnostics', label: 'Save Diagnostics…', enabled: !diagnosing },
-    ...(update.available ? [{ sep: true }, { id: 'install_update', label: update.page ? `Get Jarvis ${update.available}…` : update.installing ? `Installing ${update.available}…` : `Install Update ${update.available} and Restart`, enabled: !update.installing }] : []),
+    ...(update.available ? [{ sep: true }, { id: 'install_update', label: update.page ? `Get Yomna ${update.available}…` : update.installing ? `Installing ${update.available}…` : `Install Update ${update.available} and Restart`, enabled: !update.installing }] : []),
     { sep: true },
-    { id: 'quit', label: 'Quit Jarvis' },
+    { id: 'quit', label: 'Quit Yomna' },
   ];
   send({ type: 'menu', items });
   panel();
@@ -2285,47 +1867,26 @@ function onSecondBrain(m) {
   }
 }
 function panelState() {
-  const current = getModel(config.model);
   const doing = activity.doing();
+  const hReady = activeHarnessReady();
   return {
     version: VERSION, whatsNewFrom: config.whatsNewFrom ?? null, os: MAC ? 'mac' : process.platform === 'win32' ? 'win' : LINUX ? 'linux' : 'other', snap: SNAP_OK,
-    // Wayland: shortcuts are commands bound in the desktop's settings (bind), and there's no Cursor size.
     wayland: WAYLAND, bind: HOTKEYS_OK ? null : BIND,
-    status: busy ? { state: 'busy', text: doing ?? 'Thinking' } : loggingIn ? { state: 'busy', text: loginStatus || `Signing in to ${PROVIDER_LABELS[loggingIn]}` } : current ? { state: 'ready', text: 'Ready' } : { state: 'off', text: 'Not signed in' },
+    status: busy ? { state: 'busy', text: doing ?? 'Thinking' } : hReady ? { state: 'ready', text: `Ready (${activeHarnessLabel()})` } : { state: 'off', text: `${activeHarnessLabel()} needs setup` },
     busy, canNew: !busy && !!session?.messages.length,
-    // The type-to-ask shortcut, for the Ask button's tooltip (none on Wayland).
     askKeys: HOTKEYS_OK ? writeSymbols() || null : null,
-    // The Shortcuts page: the talk pairs, and the other shortcuts as people on this computer say them.
     shortcuts: HOTKEYS_OK ? {
       talk: VOICE_OK ? { value: sortMods(keys().talk).join('+'), pairs: talkChords(process.platform).map((c) => [sortMods(c).join('+'), pairWords(c)]) } : null,
       keys: ['summon', ...(SNAP_OK ? ['snap'] : []), 'list'].map((w) => ({ id: w, words: keyWords(keys()[w]) })),
       highlight: MAC ? highlightKeys() : null,
     } : null,
-    // The Shortcuts page's type-to-ask pick: the pairs talk isn't using, or off.
     writeKeys: HOTKEYS_OK ? { value: keys().write ? sortMods(keys().write).join('+') : 'off',
       pairs: writeChords(process.platform).filter((c) => !samePair(c, keys().talk)).map((c) => [sortMods(c).join('+'), pairWords(c)]) } : null,
-    model: current ? { provider: config.provider, id: config.model, name: current.name, providerLabel: PROVIDER_LABELS[config.provider] ?? config.provider } : null,
-    providers: MENU_PROVIDERS.map((p) => {
-      const meta = AUTH_PROVIDERS.find((x) => x.value === p);
-      const on = !!signedIn.get(p);
-      return {
-        id: p, label: PROVIDER_LABELS[p] ?? p, on,
-        method: p === 'local' ? 'local' : OAUTH[p] && (!meta || meta.methods.includes('oauth')) ? 'oauth' : meta?.methods?.includes('apikey') ? 'key' : null,
-        key: !!meta?.methods?.includes('apikey'), // also takes an API key (Claude and ChatGPT next to their sign-in)
-        // How it's connected, for the Change key and Remove links: signed in, and/or a key saved.
-        signedIn: !!oauthOn.get(p), keySaved: !!meta && apiKeyStorageKeys(p).some((k) => storedKeys.has(k)),
-        // Kimi and Xiaomi: which kind of key is being added (plan or pay-per-token).
-        kinds: meta && keyKinds(meta).length > 1 ? keyKinds(meta).map(([id, label, billing]) => ({ id, label, billing })) : null,
-        models: on ? runnable(p).map((mm) => ({ id: mm.id, name: mm.name, levels: mm.supportsThinking ? levelsOf(p, mm.id) : [] })) : [],
-      };
-    }),
-    // The Model page's local rows: each server, connected or not, and why its models aren't in the menu.
-    localServers: servers().map((x) => {
-      const on = storedKeys.has(`local:${x.id}`), r = local.status.get(x.id);
-      return { id: x.id, label: x.label, custom: !!x.custom, baseUrl: x.custom ? x.baseUrl : null, images: !!x.supportsImages, on,
-        note: !on || !r ? '' : !r.ok ? downNote(x, r.reason) : r.models.length ? '' : noModelsNote(x, r.all, true) };
-    }),
-    loggingIn,
+    harness: harnessManager.activeId,
+    harnessLabel: activeHarnessLabel(),
+    harnesses: detectedHarnesses,
+    recommendedHarness,
+    customHarness: config.customHarness ?? { command: '', args: [], protocol: 'acp' },
     recent: activity.recent,
     usage: usageToday.requests ? { requests: usageToday.requests, tokens: usageToday.tokens } : null,
     facts: listFacts().slice().reverse().map((f) => ({ id: f.id, text: f.text })),
@@ -2335,22 +1896,29 @@ function panelState() {
     commitments: openCommitments().map((c) => ({ id: c.id, text: c.text, due: c.due ?? null, when: c.due ? `${fmtWhen(c.due)}${c.repeat ? ` · repeats ${repeatLabel(c.repeat)}` : ''}` : '', overdue: !!(c.due && c.due < Date.now()), repeat: c.repeat ?? null })),
     look: config.look ?? DEFAULT_LOOK, looks: LOOKS.map(([id, label]) => [id, label]), name: lookName(),
     size: sizeNow(), sizes: SIZES,
-    voiceMode: voiceModeOf(config), replies: VOICE_ON() ? 'voice' : 'text', tts: tts().id, fishKey: hasVoiceKey('fish'), geminiKey: hasVoiceKey('gemini'),
-    fishModel: config.fishModel, fishModels: FISH_CHOICES, fishFree: tts().id === 'fish' && speech.on && speech.model.endsWith('-free'),
-    geminiVoice: geminiVoice(), geminiVoices: GEMINI_VOICES, geminiShared: ttsKeys.gemini === 'shared',
+    voiceMode: voiceModeOf(config), replies: VOICE_ON() ? 'voice' : 'text', tts: tts().id,
+    localTtsVoice: config.localTtsVoice || DEFAULT_LOCAL_VOICE,
+    localTtsVoices: LOCAL_VOICES.map(({ id, name, lang, engine, note }) => ({ id, name, lang, engine, note })),
+    localTtsStatus: localTtsState,
+    localTtsDownload: { ...localTtsDownload },
+    edgeTtsVoice: config.edgeTtsVoice || DEFAULT_EDGE_VOICE,
+    edgeTtsVoices: EDGE_VOICES.map(({ id, name, lang }) => ({ id, name, lang })),
+    geminiKey: hasVoiceKey('gemini'),
+    geminiVoice: geminiVoice(), geminiVoices: GEMINI_VOICES,
+    liveVoice: liveVoiceOf(config, geminiVoice()),
     geminiModel: config.geminiModel, geminiModels: GEMINI_CHOICES,
-    studio: tts().local ? studioState() : null,
+    studio: tts().id === 'voicestudio' ? studioState() : null,
     voice: VOICE_OK ? {
       on: !!config.voice, lang: speechLangId(), langOnline: langInfo && langInfo.id === speechLangId() ? langInfo.online : null, studioSpeak: config.studioSpeak === 'full' || config.studioSpeak === 'medium' ? config.studioSpeak : 'short', keys: HOTKEYS_OK ? talkSymbols() : null, ready: voiceReady(), mac: MAC, mute: config.muteWhileTalking !== false, autoListen: !!config.autoListen, listenEvery: !!config.listenEvery, listenSecs: listenSecs(), listenChoices: LISTEN_SECS, snoozeListen: !!config.snoozeListen, wake: WAKE_OK, wakeWord: !!config.wakeWord, wakeName: wakeName(config),
-      // The mic picker: what the voice helper lists, the pick ('' is automatic) and the mic automatic uses now.
       mics: mics.list, mic: config.mic ?? '', micAuto: mics.list.find((x) => x.id === mics.auto)?.name ?? '',
       download: NEEDS_MODEL && config.voice && !voiceReady() ? { status: voiceModel.status, pct: voiceModel.total ? Math.floor((voiceModel.done / voiceModel.total) * 100) : 0, size: sizeLabel() } : null,
     } : null,
-    sound: !!config.sound, actions: !!config.allowActions, skipAllow: !!config.skipAllow, lite: !!config.lite, hybrid: { on: !!config.hybrid, jobs: JOB_KINDS.map((j) => ({ ...j, value: parseSpec(config.heavy?.[j.kind])?.spec ?? '' })), active: routed?.spec ?? '' }, subagents: { on: !!config.subagents, delegate: DELEGATE_MODES.includes(config.delegate) ? config.delegate : 'ask', codex: { ...codexState, models: codexModels(codexState) }, crew: SUBAGENTS.map((s) => { const c = activeCrew(config.crew, crewRunnable, hybridActive() ? config.heavy : null).find((x) => x.id === s.id); return { id: s.id, label: s.label, hint: s.hint, value: parseSpec(config.crew?.[s.id])?.spec ?? '', via: c?.via ?? '', uses: c?.spec.spec ?? '' }; }) }, efforts: Object.fromEntries(SLOTS.map((k) => [k, config.efforts?.[k] ?? ''])), fallbacks: { on: !!config.backups, slots: [0, 1].map((i) => parseSpec(config.fallbacks?.[i])?.spec ?? ''), limited: limits.list().filter((l) => !l.key.includes(':') && (isQuota(l.kind) || l.kind === 'busy')).map((l) => ({ label: PROVIDER_LABELS[l.key] ?? l.key, until: l.until })), unavailable: limits.list().filter((l) => !(isQuota(l.kind) || l.kind === 'busy')).map((l) => ({ label: PROVIDER_LABELS[l.key] ?? modelName(l.key.split(':').slice(1).join(':')) ?? l.key, why: becauseOf(l.kind), until: l.until })), using: routed && /^backup/.test(routed.slot ?? '') ? routed.spec : '' }, notch: notchMode(), notchReal: notchScreen, brief: { on: !!config.morningBrief, todoist: !!config.briefTodoist, canTodoist: HANDS_OK }, focus: HANDS_OK ? { until: focusBlock?.until ?? null, task: focusBlock?.task ?? '', list: distractionList(), custom: !!config.distractions } : null, sync: { dir: config.syncDir || '', at: syncInfo.at, error: syncInfo.error, paused: !!syncInfo.paused }, secondBrain: brainState(), gameMode: HANDS_OK ? config.gameSidebar !== false : null,
+    sound: !!config.sound, allowActions: !!config.allowActions, actions: !!config.allowActions, skipAllow: !!config.skipAllow, lite: !!config.lite,
+    subagents: { on: !!config.subagents, delegate: DELEGATE_MODES.includes(config.delegate) ? config.delegate : 'ask', crew: SUBAGENTS.map((s) => { const c = activeCrew(config.crew, () => true, null).find((x) => x.id === s.id); return { id: s.id, label: s.label, hint: s.hint, via: c?.via ?? '', uses: c?.spec?.spec ?? '' }; }) },
+    notch: notchMode(), notchReal: notchScreen, brief: { on: !!config.morningBrief, todoist: !!config.briefTodoist, canTodoist: HANDS_OK }, focus: HANDS_OK ? { until: focusBlock?.until ?? null, task: focusBlock?.task ?? '', list: distractionList(), custom: !!config.distractions } : null, sync: { dir: config.syncDir || '', at: syncInfo.at, error: syncInfo.error, paused: !!syncInfo.paused }, secondBrain: brainState(), gameMode: HANDS_OK ? config.gameSidebar !== false : null,
     login: login.supported ? { on: login.on } : null,
     update: { available: update.available, installing: update.installing, checking: update.checking, result: update.result, page: update.page, done: update.done },
     intro: !!intro,
-    // The latest error anyone saw, for Copy last error.
     problem: lastProblem ? { code: lastProblem.code, at: lastProblem.at } : null,
   };
 }
@@ -2360,9 +1928,8 @@ function panelState() {
 const SPEECH_LANGS = ['auto', 'en-US', 'ar-SA', 'he-IL', 'es-ES', 'fr-FR', 'de-DE', 'it-IT', 'pt-BR', 'ja-JP', 'ko-KR', 'zh-CN', 'hi-IN'];
 const speechLangId = () => (SPEECH_LANGS.includes(config.speechLang) ? config.speechLang : 'auto');
 let langInfo = null; // what the voice helper settled on for it: { id, engine, online }
-// Live mode on the Mac runs the helper even with Classic talking off: a call needs its chord and its mic, not the
-// speech model (in Live the helper has no takes; its wake word opens a call, live_wake).
-const liveTalk = () => MAC && voiceModeOf(config) === 'live';
+// Live mode runs across macOS, Linux, and Windows when Gemini Live is chosen.
+const liveTalk = () => voiceModeOf(config) === 'live';
 const voiceConfig = () => {
   send({ type: 'voice_config', enabled: VOICE_OK && (liveTalk() || (config.voice && voiceReady())), mute: config.muteWhileTalking !== false, sound: !!config.sound, wake: WAKE_OK && !!config.wakeWord, wakeName: config.wakeName || '', lang: MAC ? speechLangId() : 'auto', live: voiceModeOf(config) === 'live', ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}) });
   // The native listening pill beside the cursor stays hidden while the notch capsule is where I appear.
@@ -2434,7 +2001,7 @@ function onVoice(m) {
       openUrl('ms-settings:privacy-microphone');
     } else if (m.code === 'permission') {
       const what = m.what === 'speech' ? 'speech recognition' : 'the microphone';
-      say(`I need access to ${what} to hear you. Turn on Jarvis in the Privacy settings I just opened.`, 'concerned');
+      say(`I need access to ${what} to hear you. Turn on Yomna in the Privacy settings I just opened.`, 'concerned');
       openUrl(`x-apple.systempreferences:com.apple.preference.security?${PRIVACY[m.what] ?? 'Privacy'}`);
     } else if (m.code === 'no_input') {
       if (m.reason === 'blocked' && process.platform === 'win32') openUrl('ms-settings:privacy-microphone');
@@ -2469,7 +2036,7 @@ let shellId = 0;
 function shellCall(msg, timeout = 90_000) {
   const id = ++shellId;
   return new Promise((resolve) => {
-    const t = setTimeout(() => { shellCalls.delete(id); resolve({ ok: false, error: 'Jarvis didn\'t answer in time.' }); }, timeout);
+    const t = setTimeout(() => { shellCalls.delete(id); resolve({ ok: false, error: 'Yomna didn\'t answer in time.' }); }, timeout);
     shellCalls.set(id, (m) => { clearTimeout(t); resolve(m); });
     send({ ...msg, id });
   });
@@ -2507,7 +2074,8 @@ function switchVoiceMode(mode) {
   saveConfig(); voiceConfig(); menu();
 }
 
-async function onMenu(id, via) {
+async function onMenu(id, via, value) {
+  if (typeof id !== 'string') return;
   if (id === 'show') ui({ kind: 'summon', show: true });
   else if (id === 'ask') await typeToAsk();
   else if (id === 'stop') { const cancelled = busy; if (busy) logLine('stopped', { by: via === 'esc' ? 'esc' : 'stop' }); endIntro(); controller?.abort(); speech.stop(); ink.stop(cancelled); }
@@ -2538,75 +2106,73 @@ async function onMenu(id, via) {
     config.speechLang = lang; langInfo = null; saveConfig(); voiceConfig(); menu();
   }
   else if (/^studiospeak_(short|medium|full)$/.test(id)) { config.studioSpeak = id.slice(12); speech.setStudioSpeak?.(config.studioSpeak); saveConfig(); menu(); }
-  // The two master switches.
-  else if (id === 'hybrid') { config.hybrid = !config.hybrid; routeBack(); saveConfig(); menu(); }
   else if (/^delegate_(ask|auto)$/.test(id)) { config.delegate = id.slice(9); saveConfig(); menu(); }
   else if (id === 'subagents') { config.subagents = !config.subagents; saveConfig(); menu(); }
-  // A specialist's model ('' = none: it follows hybrid models for its kind of job, or is not on the crew).
-  else if (/^crew_(\w+):/.test(id)) {
-    const [, who, spec] = id.match(/^crew_(\w+):(.*)$/s), h = parseSpec(spec);
-    if (!SUBAGENTS.some((x) => x.id === who) || (spec && !(h && crewRunnable(h.provider, h.model)))) return;
-    config.crew = { ...config.crew, [who]: spec }; saveConfig(); menu();
-  }
-  else if (id === 'backups') { config.backups = !config.backups; routeBack(); saveConfig(); menu(); }
-  // Effort per model slot: how hard it thinks. '' automatic, 'off', or a level its model supports.
-  else if (/^effort_\w+:/.test(id)) {
-    const [, slot, level] = id.match(/^effort_(\w+):(.*)$/s);
-    if (!SLOTS.includes(slot) || !isSetting(level)) return;
-    config.efforts = { ...config.efforts, [slot]: level }; agent = null; saveConfig(); menu();
-  }
-  // Backup models, in order, for when a platform is at its limit.
-  else if (/^fallback_[12]:/.test(id)) {
-    const n = Number(id[9]), spec = id.slice(11), h = parseSpec(spec);
-    if (spec && !(h && runnableSpec(h.provider, h.model))) return;
-    const f = [config.fallbacks?.[0] ?? '', config.fallbacks?.[1] ?? '']; f[n - 1] = spec; config.fallbacks = f; saveConfig(); menu();
-  }
-  // Hybrid models: one model per kind of heavy job ('' = the default), or all of them at once.
-  else if (/^heavy_(computer|code|agents|draw|web):/.test(id)) {
-    const [, kind, spec] = id.match(/^heavy_(\w+):(.*)$/s), h = parseSpec(spec);
-    if (spec && !(h && runnableSpec(h.provider, h.model))) return;
-    config.heavy = { ...config.heavy, [kind]: spec }; routeBack(); saveConfig(); menu();
-  }
-  else if (id.startsWith('heavyall:')) {
-    const spec = id.slice(9), h = parseSpec(spec);
-    if (!h || !runnableSpec(h.provider, h.model)) return;
-    config.heavy = Object.fromEntries(JOB_KINDS.map((j) => [j.kind, spec])); routeBack(); saveConfig(); menu();
-    say(`Heavy jobs will use ${getModel(h.model)?.name ?? h.model}.`, 'happy');
-  }
-  else if (id.startsWith('model:')) {
-    routeBack(); // the default is being changed: any heavy job's model steps aside
-    const [, p, ...rest] = id.split(':');
-    if (!canRun(p, rest.join(':'))) return;
-    config.provider = p; config.model = rest.join(':'); config.lastModels = { ...config.lastModels, [p]: config.model }; agent = null; saveConfig(); menu();
-    // A small local model can't do most of what the full Jarvis asks of it: Lite mode is suggested (#73).
-    const small = p === 'local' && !config.lite && isSmallModel(config.model);
-    say(`Switched to ${getModel(config.model)?.name ?? config.model}.${small ? ' It looks like a small model, so Lite mode may suit it better: switch it on on the Model page.' : ''}`, small ? 'concerned' : 'happy');
-    if (small) panelNote('A small model like this works best with Lite mode on (just below).');
-    if (p === 'local') measureLocal(config.model).catch(() => {});
+  else if (id.startsWith('harness:') || id === 'set_harness') {
+    const hId = id === 'set_harness' ? value : id.slice(8);
+    if (typeof hId === 'string' && switchHarness(hId)) say(`Switched to ${activeHarnessLabel()}.`, 'happy');
+    panel();
+  } else if (id === 'switch_harness') {
+    if (typeof value === 'string' && value.trim()) {
+      if (switchHarness(value)) say(`Switched to ${activeHarnessLabel()}.`, 'happy');
+      panel();
+    } else {
+      openPanel('harness');
+    }
+  } else if (id === 'set_custom_harness' && typeof value?.command === 'string') {
+    if (switchHarness('custom', { command: value.command, args: value.args, protocol: value.protocol })) {
+      say(`Switched to ${activeHarnessLabel()}.`, 'happy');
+    }
+    panel();
+  } else if (id === 'detect_harnesses') {
+    refreshHarnesses().finally(() => panel());
   } else if (id.startsWith('write:') && HOTKEYS_OK) keysFromPanel({ write: id === 'write:off' ? 'off' : id.slice(6).split('+') }); // #65
   else if (id.startsWith('talk:') && HOTKEYS_OK) keysFromPanel({ talk: id.slice(5).split('+') });
   else if (id.startsWith('shortcut:') && HOTKEYS_OK) {
     const [, which, accel] = id.split(':');
     if (['summon', 'snap', 'list'].includes(which)) keysFromPanel({ [which]: accel });
-  } else if (id.startsWith('login:')) oauthLogin(id.slice(6));
-  else if (id.startsWith('key:')) apiKeyLogin(id.slice(4));
-  else if (id.startsWith('signout:')) signOut(id.slice(8));
-  else if (id.startsWith('local:connect:')) connectServer(id.slice(14));
-  else if (id.startsWith('local:remove:')) removeServer(id.slice(13));
-  else if (id.startsWith('size:') && SIZES.some(([s]) => s === id.slice(5))) { config.size = id.slice(5); saveConfig(); ui({ kind: 'size', size: config.size }); menu(); }
-  else if (id.startsWith('look:')) setLook(id.slice(5));
+  } else if (id.startsWith('size:') && SIZES.some(([s]) => s === id.slice(5))) { config.size = id.slice(5); saveConfig(); ui({ kind: 'size', size: config.size }); menu(); }
+  else if (id.startsWith('look:') || id === 'set_look') {
+    const l = id === 'set_look' ? value : id.slice(5);
+    if (typeof l === 'string') setLook(l);
+  }
   else if (/^voicemode_(classic|live)$/.test(id)) switchVoiceMode(id.slice(10));
+  else if (id === 'set_voice_mode' && typeof value === 'string') { switchVoiceMode(value); if (onboarding) obState(); }
   else if (id === 'replies:text') setReplies('text');
   else if (id === 'replies:voice') setReplies('voice');
-  else if (id.startsWith('fishmodel:') && FISH_CHOICES.some((c) => c.id === id.slice(10))) {
-    config.fishModel = id.slice(10); saveConfig(); speech.setModel(config.fishModel); menu();
-  }
-  else if (id === 'fishkey') voiceKeyLogin({ provider: 'fish' });
-  else if (id === 'fishkey_remove') removeVoiceKey('fish');
   else if (id === 'geminikey') voiceKeyLogin({ provider: 'gemini' });
   else if (id === 'geminikey_remove') removeVoiceKey('gemini');
-  else if (id.startsWith('tts:')) setTts(id.slice(4));
+  else if (id === 'set_gemini_key' || id === 'panel_geminikey') {
+    const key = typeof value === 'string' ? value : value?.key;
+    const thenVoice = typeof value === 'object' && value ? !!value.thenVoice : false;
+    if (typeof key === 'string') {
+      voiceKeyLogin({
+        provider: 'gemini',
+        given: key.slice(0, 1000),
+        thenVoice,
+        note: onboarding ? (text, bad, p) => ob({ kind: 'gemini', ok: !bad, error: bad ? text : null, ...(bad && p ? linked(p) : {}) }) : panelNote,
+      }).catch((e) => console.error('voice key', e));
+    }
+  }
+  else if (id.startsWith('tts:') || id === 'set_tts') {
+    const p = id === 'set_tts' ? value : id.slice(4);
+    if (typeof p === 'string') setTts(p).catch((e) => console.error('set_tts', e));
+  }
+  else if (id.startsWith('localvoice:') || id === 'set_local_tts_voice') {
+    const v = id === 'set_local_tts_voice' ? value : id.slice(11);
+    if (typeof v === 'string') setLocalTtsVoice(v);
+  }
+  else if (id.startsWith('edgevoice:') || id === 'set_edge_tts_voice') {
+    const v = id === 'set_edge_tts_voice' ? value : id.slice(10);
+    if (typeof v === 'string') setEdgeTtsVoice(v);
+  }
+  else if (id === 'download_tts_model') {
+    downloadLocalTtsModel(typeof value === 'string' ? value : undefined).catch((e) => console.error('download_tts_model', e));
+  }
   else if (id.startsWith('geminivoice:')) setGeminiVoice(id.slice(12));
+  else if (id.startsWith('livevoice:')) {
+    if (setLiveVoice(config, id.slice(10), GEMINI_VOICES)) { saveConfig(); menu(); if (onboarding) obState(); }
+  }
   else if (id.startsWith('studiovoice:')) setStudioVoice(id.slice(12));
   else if (id === 'voicestudio_check') { await speech.checkLocal(); menu(); if (onboarding) obState(); }
   else if (id.startsWith('geminimodel:') && GEMINI_CHOICES.some((c) => c.id === id.slice(12))) {
@@ -2685,7 +2251,13 @@ async function onMenu(id, via) {
     say(config.lite ? 'Lite mode on. I\'ll stick to talking, your list, opening things and web search.' : 'Lite mode off. Everything\'s back on.', 'happy');
   }
   else if (id === 'notch_off' || id === 'notch_drop' || (id === 'notch_spread' && notchScreen)) { config.notch = id.slice(6); saveConfig(); notchUi(); voiceConfig(); menu(); }
-  else if (id === 'actions') {
+  else if (id === 'set_allow_actions') {
+    config.allowActions = !!value;
+    agents.setAllow(config.allowActions);
+    saveConfig();
+    menu();
+    if (onboarding) obState();
+  } else if (id === 'actions') {
     config.allowActions = !config.allowActions; agents.setAllow(config.allowActions); saveConfig(); menu(); // live section picks this up
     say(config.allowActions ? 'File edits and commands are on. I promise to be careful.' : 'File edits and commands are off. Hands to myself!', config.allowActions ? 'determined' : 'happy');
   } else if (id === 'skipallow') {
@@ -2708,7 +2280,7 @@ async function onMenu(id, via) {
   else if (id === 'snoozelisten') { config.snoozeListen = !config.snoozeListen; saveConfig(); menu(); }
   else if (id === 'wakeword' && WAKE_OK) { config.wakeWord = !config.wakeWord; saveConfig(); agentStale = true; voiceConfig(); menu(); }
   else if (id === 'wakename' && WAKE_OK) {
-    const typed = await ask({ prompt: `Wake word: what should come after "Hey"? (now ${wakeName(config)}; leave empty for Jarvis)`, placeholder: 'Jarvis' });
+    const typed = await ask({ prompt: `Wake word: what should come after "Hey"? (now ${wakeName(config)}; leave empty for Yomna)`, placeholder: 'Yomna' });
     if (typed == null) return;
     const r = cleanWakeName(typed);
     if (!r.ok) { say(r.why, 'concerned'); return; }
@@ -2789,15 +2361,14 @@ function takeSnap() {
 }
 
 // ---------- getting to know them (a step of the setup guide, or the guide opened from the menu) ----------
-// Jarvis asks in the guide window; they type or hold the talk keys (the guide gets the words and sends them
+// Yomna asks in the guide window; they type or hold the talk keys (the guide gets the words and sends them
 // here). The chat is its own conversation; when it ends, a memory pass over it saves what it learned as facts.
 let introKnown = new Set(); // facts that existed before the chat, so the end can show only what it learned
 let beforeIntro = null; // the conversation the chat interrupted: it carries on afterwards
 const introFacts = () => listFacts().filter((f) => !introKnown.has(f.id)).map((f) => ({ id: f.id, text: f.text }));
 async function startIntro() {
   if (intro) return ob({ kind: 'chat_state', status: 'busy' });
-  await refreshAuth();
-  if (!ensureModel()) return ob({ kind: 'chat_state', status: 'no_model' });
+  if (!activeHarnessReady()) return ob({ kind: 'chat_state', status: 'no_model' });
   intro = { n: 0 };
   introKnown = new Set(listFacts().map((f) => f.id));
   beforeIntro = session?.messages.length ? session : null;
@@ -2849,20 +2420,21 @@ async function introAnswer(text) {
 
 // ---------- setup guide ----------
 function obState() {
-  const current = getModel(config.model);
   ob({
     kind: 'state',
     platform: process.platform,
-    // What this computer can do (platform.mjs): Ask About an Area, circling while talking, and on Wayland no
-    // global shortcuts (bind: the commands to bind in the desktop's settings instead) and no Cursor size.
     snap: SNAP_OK, circle: CIRCLE_OK, session: SESSION, bind: HOTKEYS_OK ? null : BIND, sizes: SIZES,
     step: config.onboardStep ?? 0,
-    voiceMode: voiceModeOf(config), // the step-2 pick: Classic (any brain) or Live (a Gemini Live call, needs a Gemini key)
-    oauth: signInCards(Object.keys(OAUTH), (id) => oauthOn.get(id), PROVIDER_LABELS),
-    apikey: keyCards(AUTH_PROVIDERS, (id) => keyOn.get(id)),
-    connected: current && signedIn.get(config.provider) ? { provider: PROVIDER_LABELS[config.provider] ?? config.provider, model: current.name } : null,
+    voiceMode: voiceModeOf(config),
+    harness: harnessManager.activeId,
+    harnessLabel: activeHarnessLabel(),
+    harnesses: detectedHarnesses,
+    recommendedHarness,
+    customHarness: config.customHarness ?? { command: '', args: [], protocol: 'acp' },
+    connected: activeHarnessReady() ? { harness: harnessManager.activeId, label: activeHarnessLabel() } : null,
     keys: keys(),
-    actions: config.allowActions,
+    allowActions: !!config.allowActions,
+    actions: !!config.allowActions,
     login: login.supported ? login.on : null,
     sound: config.sound,
     voice: VOICE_OK && config.voice,
@@ -2873,12 +2445,18 @@ function obState() {
     filesAsked: config.filesAsked,
     look: config.look ?? DEFAULT_LOOK,
     size: sizeNow(),
-    replies: VOICE_ON() ? 'voice' : 'text', // voice only when it can really speak: a service picked without its key yet shows as text
-    tts: tts().id, fishKey: hasVoiceKey('fish'), geminiKey: hasVoiceKey('gemini'),
-    geminiVoice: geminiVoice(), geminiVoices: GEMINI_VOICES, geminiShared: ttsKeys.gemini === 'shared',
-    liveVoice: liveVoiceOf(config, geminiVoice()), // the voice a Live call speaks in (the reply step in Live picks it)
-    studio: tts().local ? studioState() : null,
-    // The "Your second brain" step: the one saved (its root, or null) and where the default one goes.
+    replies: VOICE_ON() ? 'voice' : 'text',
+    tts: tts().id,
+    localTtsVoice: config.localTtsVoice || DEFAULT_LOCAL_VOICE,
+    localTtsVoices: LOCAL_VOICES.map(({ id, name, lang, engine, note }) => ({ id, name, lang, engine, note })),
+    localTtsStatus: localTtsState,
+    localTtsDownload: { ...localTtsDownload },
+    edgeTtsVoice: config.edgeTtsVoice || DEFAULT_EDGE_VOICE,
+    edgeTtsVoices: EDGE_VOICES.map(({ id, name, lang }) => ({ id, name, lang })),
+    geminiKey: hasVoiceKey('gemini'),
+    geminiVoice: geminiVoice(), geminiVoices: GEMINI_VOICES,
+    liveVoice: liveVoiceOf(config, geminiVoice()),
+    studio: tts().id === 'voicestudio' ? studioState() : null,
     brain: { root: migrateBrain(config.secondBrain)?.root || null, desktop: desktopBrainDir(HOME, BRAIN_NAME) },
   });
 }
@@ -2921,7 +2499,7 @@ async function filesStatus(request) {
 
 let keysBefore = null;
 async function onGuide(m) {
-  if (m.type === 'ob_hello') { onboarding = true; await refreshAuth(); await voiceKeysLoaded; obState(); }
+  if (m.type === 'ob_hello') { onboarding = true; await Promise.all([refreshHarnesses(), refreshLocalTtsStatus(), voiceKeysLoaded]); obState(); }
   else if (m.type === 'ob_closed') { onboarding = false; endIntro(); stopShowcase(); if (tourPending) setTimeout(playTour, 800); }
   else if (m.type === 'ob_showcase') playShowcase();
   else if (m.type === 'ob_showcase_warm') warmShowcase();
@@ -2930,23 +2508,18 @@ async function onGuide(m) {
   else if (m.type === 'chat_answer' && typeof m.text === 'string') introAnswer(m.text.trim().slice(0, 2000));
   else if (m.type === 'chat_skip') { endIntro(); config.introDone = true; saveConfig(); menu(); }
   else if (m.type === 'chat_forget' && typeof m.id === 'string') { await forgetFact(m.id); ob({ kind: 'chat_facts', facts: introFacts() }); menu(); }
-  else if (m.type === 'ob_voicemode') { switchVoiceMode(m.mode); obState(); } // Classic or Live, picked on step 2
-  else if (m.type === 'ob_step') { config.onboardStep = Math.max(0, Math.min(9, m.step | 0)); saveConfig(); } // 0 to 9: the guide's ten steps
-  // Voice needs a working key first: without one, the guide asks for it (ob_fishkey or ob_geminikey) instead.
-  else if (m.type === 'ob_replies' && (m.mode === 'text' || (m.mode === 'voice' && speech.on))) { await voiceKeysLoaded; await setReplies(m.mode); }
-  // A service picked in the guide that already has its key: it speaks from now on (voice goes on if it was text).
+  else if (m.type === 'ob_voicemode') { switchVoiceMode(m.mode); obState(); }
+  else if (m.type === 'ob_step') { config.onboardStep = Math.max(0, Math.min(9, m.step | 0)); saveConfig(); }
+  else if (m.type === 'ob_replies' && (m.mode === 'text' || m.mode === 'voice')) { await voiceKeysLoaded; await setReplies(m.mode); }
   else if (m.type === 'ob_tts') { await setTts(m.provider); if (speech.on && tts().id === m.provider) await setReplies('voice'); }
   else if (m.type === 'ob_geminivoice') setGeminiVoice(m.voice);
-  else if (m.type === 'ob_livevoice') { if (setLiveVoice(config, m.voice, GEMINI_VOICES)) saveConfig(); obState(); } // the next Live call speaks in it
+  else if (m.type === 'ob_livevoice') { if (setLiveVoice(config, m.voice, GEMINI_VOICES)) saveConfig(); obState(); }
   else if (m.type === 'ob_studiovoice' && typeof m.voice === 'string') setStudioVoice(m.voice);
   else if (m.type === 'ob_studiocheck') { await speech.checkLocal(); obState(); }
-  else if ((m.type === 'ob_fishkey' || m.type === 'ob_geminikey') && typeof m.key === 'string') {
-    const note = (text, bad, p) => ob({ kind: 'fish', ok: !bad, error: bad ? text : null, ...(bad && p ? linked(p) : {}) });
-    await voiceKeyLogin({ provider: m.type === 'ob_geminikey' ? 'gemini' : 'fish', given: m.key.slice(0, 1000), thenVoice: true, note }).catch((e) => { const p = problem('key', e, { store: KEY_STORE }); note(p.text, true, p); });
+  else if (m.type === 'ob_geminikey' && typeof m.key === 'string') {
+    const note = (text, bad, p) => ob({ kind: 'gemini', ok: !bad, error: bad ? text : null, ...(bad && p ? linked(p) : {}) });
+    await voiceKeyLogin({ provider: 'gemini', given: m.key.slice(0, 1000), thenVoice: true, note }).catch((e) => { const p = problem('key', e, { store: KEY_STORE }); note(p.text, true, p); });
   }
-  else if (m.type === 'ob_login' && OAUTH[m.provider]) oauthLogin(m.provider, typeof m.id === 'string' ? m.id.slice(0, 40) : undefined);
-  else if (m.type === 'ob_login_cancel') cancelLogin(typeof m.id === 'string' ? m.id : undefined);
-  else if (m.type === 'ob_apikey') apiKeyLogin(m.provider, String(m.key ?? '')).catch((e) => { const p = problem('key', e, { store: KEY_STORE }); ob({ kind: 'login', provider: m.provider, phase: 'error', error: p.text, ...linked(p) }); });
   else if (m.type === 'ob_files') ob({ kind: 'files', status: await filesStatus(!!m.request) });
   else if (m.type === 'set_actions') { config.allowActions = !!m.on; agents.setAllow(config.allowActions); saveConfig(); menu(); obState(); }
   else if (m.type === 'set_login') setLogin(!!m.on);
@@ -2961,7 +2534,6 @@ async function onGuide(m) {
     const error = applyKeys(m);
     ob({ kind: 'keys', keys: keys(), ...(error ? { error } : {}) });
   } else if (m.type === 'keybind_error') {
-    // The OS refused the new show/hide shortcut (another app owns it): put the old one back.
     if (keysBefore && ['summon', 'snap', 'list'].includes(m.which)) saveKeys({ ...keys(), [m.which]: keysBefore[m.which] });
     ob({ kind: 'keys', keys: keys(), error: 'Another app already uses that shortcut. Try a different one.' });
     panelNote('Another app already uses that shortcut. Try a different one.', true);
@@ -2971,25 +2543,39 @@ async function onGuide(m) {
 }
 
 // ---------- main ----------
+// Top-level setting messages accepted directly on stdin and normalized into onMenu() values.
+const DIRECT_MENU_VALUE = {
+  detect_harnesses: () => undefined,
+  set_harness: (m) => m.value ?? m.harness ?? m.id,
+  switch_harness: (m) => m.value ?? m.harness ?? m.id,
+  set_custom_harness: (m) => m.value ?? m,
+  set_tts: (m) => m.value ?? m.tts ?? m.provider ?? m.id,
+  set_local_tts_voice: (m) => m.value ?? m.voice ?? m.id,
+  set_edge_tts_voice: (m) => m.value ?? m.voice ?? m.id,
+  download_tts_model: (m) => m.value ?? m.voice,
+  set_voice_mode: (m) => m.value ?? m.mode,
+  set_gemini_key: (m) => (typeof m.value === 'string' ? m.value : typeof m.key === 'string' ? { key: m.key, thenVoice: !!m.thenVoice } : undefined),
+  panel_geminikey: (m) => (typeof m.key === 'string' ? { key: m.key, thenVoice: !!m.thenVoice } : undefined),
+  set_allow_actions: (m) => m.value ?? m.on ?? m.allow,
+  set_look: (m) => m.value ?? m.look ?? m.id,
+};
+
 createInterface({ input: process.stdin }).on('line', (line) => {
   let m;
   try { m = JSON.parse(line); } catch { return; }
-  if (m.type === 'menu') onMenu(m.id, m.via).catch((e) => console.error('menu', e));
-  else if (m.type === 'panel_open') { panelOpen = true; panelAt = Date.now(); logLine('panel_open', {}); if (VOICE_OK) send({ type: 'voice_mics' }); Promise.all([refreshAuth(), signedIn.get('local') && syncLocal(), tts().local && speech.checkLocal()]).catch(() => {}).finally(() => { panel(); refreshCatalogs(); }); refreshCodex(); }
+  if (m.type === 'menu') onMenu(m.id, m.via, m.value).catch((e) => console.error('menu', e));
+  else if (m.type === 'panel_open') {
+    panelOpen = true; panelAt = Date.now(); logLine('panel_open', {});
+    if (VOICE_OK) send({ type: 'voice_mics' });
+    Promise.all([refreshHarnesses(), refreshLocalTtsStatus(), tts().id === 'voicestudio' && speech.checkLocal()]).catch(() => {}).finally(() => panel());
+  }
   else if (m.type === 'diagnostics') { shellInfo?.(m); shellInfo = null; }
   else if (m.type === 'panel_closed') { panelOpen = false; logLine('panel_closed', { why: String(m.why ?? ''), ms: Date.now() - panelAt }); }
-  else if (m.type === 'panel_key' && typeof m.provider === 'string' && typeof m.key === 'string') {
-    const id = typeof m.kind === 'string' ? m.kind : m.provider;
-    const label = PROVIDER_LABELS[m.provider] ?? m.provider;
-    if (storageKeyProvider(id) !== m.provider) return;
-    apiKeyLogin(id, m.key.slice(0, 1000)).then(() => panelNote(signedIn.get(m.provider) ? `${label} is connected.` : `That ${label} key didn't work.`, !signedIn.get(m.provider)))
-      .catch((e) => { const p = problem('key', e, { store: KEY_STORE }); panelNote(p.text, true, p); });
-  } else if (m.type === 'panel_local_add' && typeof m.label === 'string' && typeof m.baseUrl === 'string') {
-    addServer({ label: m.label.slice(0, 200), baseUrl: m.baseUrl.slice(0, 500), key: typeof m.key === 'string' ? m.key.trim().slice(0, 1000) : '', images: m.images === true }).catch((e) => console.error('add server', e));
-  } else if ((m.type === 'panel_fishkey' || m.type === 'panel_geminikey') && typeof m.key === 'string') voiceKeyLogin({ provider: m.type === 'panel_geminikey' ? 'gemini' : 'fish', given: m.key.slice(0, 1000), note: panelNote }).catch((e) => console.error('voice key', e));
+  else if (Object.hasOwn(DIRECT_MENU_VALUE, m.type)) {
+    onMenu(m.type, null, DIRECT_MENU_VALUE[m.type](m)).catch((e) => console.error(m.type, e));
+  }
   else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); }
   else if (m.type === 'ui_ready') {
-    retired.then((notes) => { if (notes.length) { retired = Promise.resolve([]); say(`${notes.join(' ')} Do it on the Model page in ${PANEL}.`, 'concerned'); } });
     ui({ kind: 'sound', on: config.sound });
     notchUi();
     ui({ kind: 'size', size: sizeNow() });
@@ -3000,8 +2586,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.type?.startsWith('voice')) onVoice(m);
   else if (m.type === 'snap') areaSnap();
   else if (m.type === 'highlight') { if (voiceModeOf(config) !== 'live') onHighlight(m.area); else if (typeof m.area?.file === 'string') fs.unlink(m.area.file).catch(() => {}); }
-  // Live mode: a tap of the talk chord opens or hangs up the call, the call's mic frames, and the Mac going to sleep.
-  // "Hey Jarvis" in Live: opens a call like a tap when none is open; during one it's ignored (never a hang-up).
+  // Live mode: a tap of the talk chord opens or hangs up the call, the call's mic frames, and sleep hangs up.
+  // "Hey Yomna" in Live: opens a call like a tap when none is open; during one it's ignored (never a hang-up).
   else if (m.type === 'live_wake') { if (voiceModeOf(config) === 'live' && liveCall.wakeOk()) { interruptQuietly('live'); speech.stop(); liveCall.toggle().catch((e) => console.error('live', e)); } }
   else if (m.type === 'live_toggle') { if (voiceModeOf(config) === 'live') { if (!liveCall.open) { interruptQuietly('live'); speech.stop(); } liveCall.toggle().catch((e) => console.error('live', e)); } }
   // The overlay's Esc in a call. No call to hang up (the sidecar respawned mid-call): still say closed, so Esc is let go.
@@ -3063,43 +2649,27 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.type === 'agent_folder') agents.openFolder(String(m.id), { files: m.files === true }).catch((e) => console.error('agent folder', e));
   else if (m.type === 'agent_dismiss') agents.dismiss(String(m.id));
 }).on('close', () => {
-  // The app quit (or is restarting for an update): save a reply still running, let the last saves land, never hang.
   if (busy) syncSession();
   liveCall.hangUp('quit');
   agents.stopAll();
+  harnessManager.dispose();
+  desktopMcp?.close().catch(() => {});
   mcp.dispose();
-  closeSpare();
   Promise.race([flushWrites(), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
 });
 
-// Retired sign-ins (Claude from before Claude Code, the old ChatGPT, Kimi, Grok and Google ones) no longer work:
-// each is removed from auth.json, and said once.
-let retired = (async () => {
-  const notes = [];
-  for (const r of await auth.legacySignIns().catch(() => [])) if (await auth.takeLegacySignIn(r.provider).catch(() => false)) notes.push(r.message);
-  return notes;
-})();
-await retired;
-await refreshAuth();
-// Signed in with Claude, but this version's Claude Code isn't there yet (#101): fetched before the first request.
-if (oauthOn.get('anthropic')) claudeCode.start();
-// Before ensureModel, so a local model that's picked is still there (and an OpenRouter or OpenCode one).
-if (signedIn.get('local')) await syncLocal();
-await catalogs.load();
-ensureModel();
-refreshCatalogs();
-// The first request after launch gets a warm Claude Code too.
-if (config.onboarded) warmUp();
-// Due commitments turn into a nudge, but only when Sidekick isn't mid-conversation.
+refreshHarnesses().catch(() => {});
+refreshLocalTtsStatus().catch(() => {});
+// Due commitments turn into a nudge, but only when Yomna isn't mid-conversation.
 async function remindTick() {
-  if (busy || queued || loggingIn || onboarding) { reminderRetry(); return; }
+  if (busy || queued || onboarding) { reminderRetry(); return; }
   const due = await takeDueReminders();
   if (!due.length) return;
   const firedAt = Date.now();
   firedReminders = [...firedReminders.filter((f) => firedAt - f.at < 3600_000), ...due.map((c) => ({ id: c.id, at: firedAt }))].slice(-20);
   menu(); showList({ flash: due[0].id, seconds: 6 });
   const list = due.map((c) => `- ${c.id}: ${c.text}${c.due ? ` (was due ${fmtWhen(c.due)})` : ''}${c.next ? ` [repeating reminder: already moved on to ${fmtWhen(c.next)}, nothing to mark done]` : c.kind === 'reminder' ? ' [plain reminder: already cleared, nothing to mark done]' : ''}${c.repeat && !c.next ? ` [repeats ${repeatLabel(c.repeat)}${c.missed ? '; the last time went by without being done' : ''}]` : ''}`).join('\n');
-  if (signedIn.size && [...signedIn.values()].some(Boolean)) {
+  if (activeHarnessReady()) {
     enqueue(`(System, not ${userName}: these commitments are due now. Nudge ${userName} about them in one or two sentences, in character. Start with the [remind] tag, or [upset] if it's well overdue. If they answer "snooze", "in 10 minutes" or "move it to tomorrow", use snooze_reminder.)\n${list}`, { listenAfter: snoozeListenOn() });
   } else {
     ui({ kind: 'agent', e: { type: 'emote', action: 'remind' } });
@@ -3182,12 +2752,12 @@ overlays();
 sendKeys();
 send({ type: 'login_item' });
 if (MAC) send({ type: 'notch_screen' });
-logLine('start', { version: VERSION, platform: process.platform, ...(LINUX ? { session: SESSION } : {}), model: config.model });
+logLine('start', { version: VERSION, platform: process.platform, ...(LINUX ? { session: SESSION } : {}), harness: harnessManager.activeId });
 // Windows 11: the tray icon is shown next to the clock once (wintray.mjs); after that, hiding it again is up to them.
 // Explorer adds its entry a moment after the icon appears, so it's looked for a few times.
-if (process.platform === 'win32' && process.env.JARVIS_EXE && !config.trayShown) {
+if (process.platform === 'win32' && process.env.YOMNA_EXE && !config.trayShown) {
   let tries = 0;
-  const tryShow = () => showTrayIcon({ exe: process.env.JARVIS_EXE, exec: runInput }).then((r) => {
+  const tryShow = () => showTrayIcon({ exe: process.env.YOMNA_EXE, exec: runInput }).then((r) => {
     tries++;
     if (r === 'missing' && tries < 10) return void setTimeout(tryShow, 3000).unref?.();
     logLine('tray_show', { result: r, tries });
@@ -3201,7 +2771,6 @@ midnightClean();
 setTimeout(() => checkUpdates(), 20_000);
 setInterval(() => checkUpdates(), 6 * 3600_000);
 voiceConfig();
-refreshCodex(); // the crew's Codex slots count only once the CLI is checked, so check now, not just when the panel opens
 // First run (or setup never finished): open the guide.
 // v2 added the "Control apps" (Accessibility) permission: people who finished setup before that
 // get the guide once more, on the permissions step.

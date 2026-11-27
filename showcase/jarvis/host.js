@@ -28,7 +28,7 @@
   // handsBusy: Jarvis is acting in another app (it may take the real cursor), so clicks always go through.
   let hot = null, cursor = null, handsBusy = false;
   // Linux ("x11" or "wayland", set by the shell): clicks are let through by region instead (below).
-  const LINUX = !!window.JARVIS_LINUX;
+  const LINUX = !!(window.YOMNA_LINUX || window.JARVIS_LINUX);
   const setHot = (h) => { if (!LINUX && h !== hot) { hot = h; invoke('set_hot', { hot: h }).catch(() => { hot = null; }); } };
   window.__jarvisPtr = (x, y, t) => {
     if (!window.Jarvis?.ptr) return;
@@ -83,8 +83,9 @@
   const field = document.createElement('input');
   Object.assign(field.style, { position: 'fixed', left: '0', top: '0', width: '1px', height: '1px', opacity: '0', pointerEvents: 'none' });
   // Its name is its look's (the sidecar's LOOKS).
-  const NAMES = { jarvis: 'JARVIS', glayos: 'GlayOS', ultren: 'Ultren', sarah: 'Sarah', adrian: 'Adrian', rita: 'Rita X' };
-  field.setAttribute('aria-label', 'Message for Jarvis');
+  const NAMES = { yomna: 'Yomna', jarvis: 'Yomna', glayos: 'GlayOS', ultren: 'Ultren', sarah: 'Sarah', adrian: 'Adrian', rita: 'Rita X' };
+  field.setAttribute('aria-label', 'Message for Yomna');
+  field.dir = 'auto';
   field.autocomplete = 'off'; field.spellcheck = false;
   document.addEventListener('DOMContentLoaded', () => document.body.appendChild(field));
   if (document.body) document.body.appendChild(field);
@@ -99,14 +100,15 @@
   };
   const finishAsk = (text) => {
     if (!ask) return;
-    const { id, h, label } = ask;
+    const { id, h, label, onAnswer } = ask;
     const ask0 = ask;
     ask = null;
     if (label != null) field.setAttribute('aria-label', label);
     field.blur(); field.value = '';
     typing(false);
     h.close();
-    if (id) send({ type: 'answer', id, text });
+    if (onAnswer) onAnswer(text);
+    else if (id) send({ type: 'answer', id, text });
     // A typed request: the capsule comes out now, not when the brain gets round to starting the turn.
     if (id && text && ask0?.bar && notchOn()) N().begin();
   };
@@ -139,7 +141,13 @@
     focusField();
   };
   // The bubble draws the caret where the field has it, so moving back to fix a word shows where typing goes.
-  const syncField = () => ask && !ask.bar && !ask.choices && ask.h.set(field.value, field.selectionDirection === 'backward' ? field.selectionStart : field.selectionEnd);
+  const syncField = () => {
+    if (!ask || ask.bar || ask.choices) return;
+    const v = field.value;
+    const raw = field.selectionDirection === 'backward' ? field.selectionStart : field.selectionEnd;
+    const caret = typeof raw === 'number' ? raw : v.length;
+    ask.h.set(v, caret);
+  };
   field.addEventListener('input', syncField);
   field.addEventListener('select', syncField);
   field.addEventListener('keyup', syncField);
@@ -534,8 +542,8 @@
     if (m.kind === 'size') { for (const t of Jarvis.tiles ?? []) t.creature.setForm?.(m.size); return; }
     if (m.kind === 'look') {
       for (const t of Jarvis.tiles ?? []) t.creature.setLook?.(m.look);
-      field.setAttribute('aria-label', `Message for ${NAMES[m.look] ?? NAMES.jarvis}`);
-      if (Jarvis.notch) { Jarvis.notch.name = NAMES[m.look] ?? NAMES.jarvis; Jarvis.notch.look = m.look; }
+      field.setAttribute('aria-label', `Message for ${NAMES[m.look] ?? NAMES.yomna}`);
+      if (Jarvis.notch) { Jarvis.notch.name = NAMES[m.look] ?? NAMES.yomna; Jarvis.notch.look = m.look; }
       return;
     }
     if (!getAgent()) return;
@@ -579,6 +587,33 @@
     else if (m.kind === 'live') onLive(m);
     else if (m.kind === 'list') Jarvis.ink?.reminders(m);
     else if (m.kind === 'front_window') Jarvis.sidebar?.front(m);
+    else if (m.kind === 'harness_error') {
+      const a = getAgent();
+      dropAutoListen();
+      responding = false;
+      a.working?.(false);
+      if (agentish) { agentish = false; Jarvis.agentHome?.hatchOff(); }
+      const text = m.message || m.reason || 'Harness error.';
+      if (research) panel()?.fail(text);
+      research = waveTurn = false;
+      endTalk();
+      if (ask) finishAsk(null);
+      for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
+      if (m.suggestSwitch) {
+        const choices = ['Switch Harness', 'Dismiss'];
+        const onAnswer = (res) => { if (res === 'yes') send({ type: 'menu', id: 'switch_harness' }); };
+        const h = capR()
+          ? N().prompt(text, choices, (i) => finishAsk(i === 0 ? 'yes' : null))
+          : a.prompt({ placeholder: text, choices, onChoose: (i) => finishAsk(i === 0 ? 'yes' : null) });
+        ask = { id: null, h, choices, sel: -1, label: null, onAnswer };
+      } else if (capR()) {
+        N().fail(text);
+      } else if (notchOn()) {
+        N().close();
+      } else {
+        a.say(text, { mood: 'concerned' });
+      }
+    }
   };
 
   // ---------- Esc ----------

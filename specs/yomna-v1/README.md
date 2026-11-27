@@ -75,9 +75,9 @@ graph TD
 - [x] [task-08-hands-linux-helper](./tasks/task-08-hands-linux-helper.md) — Build `hands-linux` Rust helper (Hyprland IPC, `slurp`/`grim` area snap, `wtype`/`ydotool`, AT-SPI2)
 
 ### Wave 3
-- [ ] [task-09-sidecar-wireup-and-gg-removal](./tasks/task-09-sidecar-wireup-and-gg-removal.md) — Wire harnesses, `yomna-desktop` MCP, local TTS, and Linux/Windows Gemini Live into `sidekick.mjs` and remove `@kenkaiiii/gg-*`
-- [ ] [task-10-frontend-overlay-rebrand-and-rtl](./tasks/task-10-frontend-overlay-rebrand-and-rtl.md) — Rebrand desktop overlay to Yomna, prune dead Roamies code, and fix Arabic/Darija RTL canvas text rendering
-- [ ] [task-11-panel-and-onboarding-harness-ui](./tasks/task-11-panel-and-onboarding-harness-ui.md) — Rebuild Settings Panel & Onboarding Wizard for CLI harness auto-detect, keyless TTS, cross-platform Gemini Live, and clean changelog
+- [x] [task-09-sidecar-wireup-and-gg-removal](./tasks/task-09-sidecar-wireup-and-gg-removal.md) — Wire harnesses, `yomna-desktop` MCP, local TTS, and Linux/Windows Gemini Live into `sidekick.mjs` and remove `@kenkaiiii/gg-*`
+- [x] [task-10-frontend-overlay-rebrand-and-rtl](./tasks/task-10-frontend-overlay-rebrand-and-rtl.md) — Rebrand desktop overlay to Yomna, prune dead Roamies code, and fix Arabic/Darija RTL canvas text rendering
+- [x] [task-11-panel-and-onboarding-harness-ui](./tasks/task-11-panel-and-onboarding-harness-ui.md) — Rebuild Settings Panel & Onboarding Wizard for CLI harness auto-detect, keyless TTS, cross-platform Gemini Live, and clean changelog
 
 ### Wave 4
 - [ ] [task-12-build-wiring-and-omarchy-packaging](./tasks/task-12-build-wiring-and-omarchy-packaging.md) — Wire `hands-linux` into Tauri build, sync IPC contracts, add Omarchy/Hyprland setup guide, and verify zero branding leaks

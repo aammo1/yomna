@@ -10,13 +10,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-e2e-classic-')));
+const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'yomna-e2e-classic-')));
 process.env.HOME = process.env.USERPROFILE = tmp;
-process.env.JARVIS_DATA_DIR = path.join(tmp, 'data');
-process.env.JARVIS_FAKE_AGENT = fileURLToPath(new URL('./fakeagent.mjs', import.meta.url));
+process.env.YOMNA_DATA_DIR = path.join(tmp, 'data');
+process.env.YOMNA_FAKE_AGENT = fileURLToPath(new URL('./fakeagent.mjs', import.meta.url));
 process.env.FAKE_LOG = path.join(tmp, 'fake-agent.log');
-process.env.JARVIS_BG = '1';
-const HANDS_OK = ['darwin', 'win32'].includes(process.platform);
+process.env.YOMNA_BG = '1';
+const HANDS_OK = ['darwin', 'win32', 'linux'].includes(process.platform);
 
 // The fake hands helper (a .mjs runs on this Node): logs every call, and answers like the real one for one window.
 // texts.json: the window's text lines (a doc to fill in). canvas.json: a page drawn in a canvas (Google Docs): its
@@ -42,7 +42,7 @@ if (a[0] === 'front') o = { ok: true, app: win.app, title: win.title };
 if (a[0] === 'capture') { fs.writeFileSync(a[1], 'x'); o = { ok: true, file: a[1], window: win, pixels: fs.existsSync(${JSON.stringify(canvasFile)} + '.skew') ? [800, 100] : [800, 600] }; }
 console.log(JSON.stringify(o));
 `);
-process.env.JARVIS_HANDS = handsFake;
+process.env.YOMNA_HANDS = handsFake;
 const handsCalls = () => (fs.existsSync(handsLog) ? fs.readFileSync(handsLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 // A fake `open` (macOS) / `xdg-open` (Linux) first on PATH: links "open" into a log, never a real browser.

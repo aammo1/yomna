@@ -23,9 +23,9 @@ for (const f of ['../sidekick.mjs', '../../src-tauri/src/main.rs', '../../../jar
   assert.ok(!/openPanel\('about'\)|tab: 'about'|"about"\)|page=about/.test(t), `${f} opens no About page`);
 }
 // Its help links moved to General, and the manual says so.
-assert.match(js, /group\('Help', null, null,[^]*Save diagnostics/);
-const { aboutJarvis } = await import('../about.mjs');
-const man = aboutJarvis({ name: 'R', looks: ['A', 'B'], mac: true, linux: false, snap: true, pointer: true, voice: true, hotkeys: true, wake: true });
+assert.match(js, /Save diagnostics/);
+const { aboutYomna } = await import('../about.mjs');
+const man = aboutYomna({ name: 'R', looks: ['A', 'B'], mac: true, linux: false, snap: true, pointer: true, voice: true, hotkeys: true, wake: true });
 assert.ok(!/and About \(|in About/.test(man), 'the manual has no About page');
 assert.match(man, /Second brain \(/);
 
@@ -33,6 +33,6 @@ assert.match(man, /Second brain \(/);
 const guard = js.match(/if \(!PANES\[name\]\) name = [^;]+;/)[0];
 const show = vm.runInNewContext(`(name) => { ${guard} return name; }`, { PANES: Object.fromEntries(PANES.map((k) => [k, 1])) });
 assert.equal(show('about'), 'home');
-assert.equal(show('settings'), 'model');
+assert.equal(show('settings'), 'harness');
 assert.equal(show('secondbrain'), 'secondbrain');
 console.log('panel pages tests: passed');

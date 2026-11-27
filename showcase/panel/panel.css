@@ -8,6 +8,8 @@
   /* Type scale, four steps: the title, section heads, everything you read (descriptions, rows, empty
      states), and the small print (dates, hints, timestamps, labels, buttons). */
   --t-head: 13px; --t-body: 12px; --t-small: 11px;
+  /* WCAG AA contrast for muted labels (>= 0.62 opacity). */
+  --ink-3: rgba(232, 255, 250, 0.68);
   /* Motion: the CRT switch-on when it opens, and the switch-off when it closes (main.rs waits --shut). */
   --open: 240ms; --shut: 150ms;
 }
@@ -71,7 +73,7 @@ html, body { height: 100%; background: transparent; }
 /* ---------- header: who, and what it's doing right now ---------- */
 .head { display: flex; align-items: center; gap: 8px; padding: 6px var(--gut) 6px 4px; }
 .head-text { min-width: 0; flex: 1; display: grid; }
-/* Jarvis stands on a small LED pad, like the setup guide's. */
+/* Yomna stands on a small LED pad, like the setup guide's. */
 .avatar { flex: none; width: 100px; height: 74px; margin-inline-end: -10px; background: radial-gradient(closest-side, rgba(120, 255, 226, 0.10), transparent) 50% 92% / 70% 22% no-repeat; }
 /* Something it says (a new look, an update; not the setup guide's .quip bubble): in the status line's place for a moment, typed in its own font. */
 .head-text .by, .head-text .saying { grid-area: 2 / 1; }
@@ -106,12 +108,10 @@ html, body { height: 100%; background: transparent; }
 .looktile:hover { --bc: var(--line-hi); color: var(--ink); }
 .looktile[aria-checked="true"] { --bc: var(--accent); --fill: #0a2a28; color: var(--accent); }
 
-/* ---------- About: who made it ---------- */
-
 /* ---------- sidebar: one page per concern ---------- */
 .split { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--side) minmax(0, 1fr); border-top: 1px dashed var(--line); }
 :root { --side: 148px; }
-.side { display: flex; flex-direction: column; gap: 4px; padding: 12px 10px var(--gut); border-right: 1px dashed var(--line); overflow-y: auto; }
+.side { display: flex; flex-direction: column; gap: 4px; padding: 12px 10px var(--gut); border-inline-end: 1px dashed var(--line); overflow-y: auto; }
 .nav { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
 /* A page link: quiet text until it's hovered or current; the current one sits in the accent LED frame. */
 .navi {
@@ -374,5 +374,41 @@ html, body { height: 100%; background: transparent; }
   .navi, .arm > span, .tab, .ibtn, .ibtn > span { transition: none; }
 }
 
-/* Arabic and Hebrew in a list (dir=auto on the text): the Arabic font first, for its own word spacing. */
-.item .text:dir(rtl) { font-family: "Jarvis Arabic RTL", var(--mono); }
+/* Arabic and Hebrew in lists and inputs (dir=auto): the Arabic font first, for its own word spacing. */
+.item .text:dir(rtl), .wn-title:dir(rtl), .wn-text:dir(rtl), .setting > span:dir(rtl), input:dir(rtl) { font-family: "Jarvis Arabic RTL", var(--mono); }
+
+/* ---------- Harness cards & status pills ---------- */
+.harness-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.harness-head .ghead { flex: 1; }
+.harness-list { display: grid; gap: 8px; }
+.harness-card {
+  display: grid; gap: 6px; padding: 10px 12px;
+  --bc: var(--line-hi); --fill: var(--panel);
+}
+.harness-card.active { --bc: var(--accent); --fill: #0a2a28; }
+.harness-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.harness-name { font: 700 var(--t-body)/1.3 var(--mono); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.harness-tag {
+  padding: 1px 5px; font: 700 10px/1.2 var(--mono); text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--ink-2); border: 1px solid var(--line-hi); background: rgba(120, 255, 226, 0.06);
+}
+.pill {
+  flex: none; margin-inline-start: auto; display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 7px; font: 700 10px/1.2 var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
+}
+.pill.ready { background: #0e3a36; color: var(--accent); border: 1px solid var(--accent); }
+.pill.needs-login { background: rgba(255, 209, 102, 0.14); color: #ffd166; border: 1px solid #ffd166; }
+.pill.missing { background: rgba(232, 255, 250, 0.08); color: var(--ink-3); border: 1px solid var(--line-hi); }
+.harness-meta { margin: 0; font-size: var(--t-small); line-height: 1.4; color: var(--ink-3); overflow-wrap: break-word; }
+.harness-cmd-row {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  background: #051214; border: 1px solid var(--line);
+}
+.harness-cmd {
+  flex: 1; min-width: 0; font: 500 var(--t-small)/1.3 var(--mono); color: var(--ink-2);
+  overflow-wrap: anywhere; user-select: text; -webkit-user-select: text;
+}
+.harness-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.custom-acp { display: grid; gap: 8px; padding-top: 4px; }
+.custom-acp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.footer-note { margin: 4px 0 0; font-size: var(--t-small); line-height: 1.4; color: var(--ink-3); }

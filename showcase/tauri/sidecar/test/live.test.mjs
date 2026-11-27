@@ -114,9 +114,9 @@ const audio = (data) => ({ serverContent: { modelTurn: { parts: [{ inlineData: {
   assert.deepEqual(caps, [
     { type: 'caption', who: 'user', text: 'Open the ', done: false },
     { type: 'caption', who: 'user', text: 'Open the repo.', done: false },
-    { type: 'caption', who: 'jarvis', text: 'On it.', done: false },
+    { type: 'caption', who: 'yomna', text: 'On it.', done: false },
     { type: 'caption', who: 'user', text: 'Open the repo.', done: true },
-    { type: 'caption', who: 'jarvis', text: 'On it.', done: true },
+    { type: 'caption', who: 'yomna', text: 'On it.', done: true },
   ]);
 }
 
@@ -255,7 +255,7 @@ const audio = (data) => ({ serverContent: { modelTurn: { parts: [{ inlineData: {
   await live.start();
   t.calls[0].server({ sessionResumptionUpdate: { newHandle: 'h', resumable: true } });
   t.calls[0].drop(1011, '');
-  await tick(); await tick();
+  for (let i = 0; i < 40 && !out.some((e) => e.type === 'error'); i++) await new Promise((r) => setTimeout(r, 50));
   assert.equal(out.find((e) => e.type === 'error').reason, 'network');
   assert.equal(live.state, 'closed');
 }

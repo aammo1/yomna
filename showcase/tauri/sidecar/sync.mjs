@@ -1,6 +1,6 @@
 // Memory sync between computers (macOS and Windows) through a folder the user already syncs (iCloud Drive, OneDrive,
-// Dropbox, Google Drive). No server, no account: each computer writes only its own file, <folder>/Jarvis Sync/<device>.json
-// (or Roamies Sync/, its name before the rename, for a folder set up then, so older copies keep syncing), and reads
+// Dropbox, Google Drive). No server, no account: each computer writes only its own file, <folder>/Yomna Sync/<device>.json
+// (or Jarvis Sync/, its name before the rename, for a folder set up then, so older copies keep syncing), and reads
 // the others', so the sync service never sees two computers editing one file. Commitments, reminders and facts
 // are merged item by item, newest change wins; a deletion is kept as a tombstone so it isn't brought back.
 // Conversations, sign-ins and keys are never written there.
@@ -13,16 +13,16 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const SUBDIR = 'Jarvis Sync';
-export const OLD_SUBDIR = 'Roamies Sync'; // a folder set up before the rename
-/** The sync files' folder inside dir: Jarvis Sync, or Roamies Sync when only that one is there. */
+export const SUBDIR = 'Yomna Sync';
+export const OLD_SUBDIR = 'Jarvis Sync'; // a folder set up before the rename
+/** The sync files' folder inside dir: Yomna Sync, or Jarvis Sync when only that one is there. */
 export const subdirOf = (dir) => { const sub = path.join(dir, SUBDIR), old = path.join(dir, OLD_SUBDIR); return !existsSync(sub) && existsSync(old) ? old : sub; };
 export const HEADER = 'sync.json';
 export const KEY_NAME = 'sync-key'; // the secret store's name for this computer's copy of the key
 export const MIN_PASSPHRASE = 8;
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
-const CHECK = 'jarvis-sync';
-const OLD_CHECK = 'roamies-sync'; // what a folder set up before the rename holds
+const CHECK = 'yomna-sync';
+const OLD_CHECK = 'jarvis-sync'; // what a folder set up before the rename holds
 
 // ---------- encryption ----------
 /** The folder key from the passphrase and the folder's salt (scrypt; about a tenth of a second, at setup only). */
@@ -59,7 +59,7 @@ export async function prepareFolder(dir, passphrase) {
     const fresh = { version: 1, kdf: 'scrypt', salt: salt.toString('base64'), check: seal(key, CHECK, 'check') };
     try { await fs.writeFile(file, JSON.stringify(fresh), { flag: 'wx', mode: 0o600 }); return { key }; } catch { head = await read(); }
   }
-  if (head?.version !== 1 || head.kdf !== 'scrypt' || typeof head.salt !== 'string') return { error: 'The sync folder was set up by a newer Jarvis, or its sync.json is damaged.' };
+  if (head?.version !== 1 || head.kdf !== 'scrypt' || typeof head.salt !== 'string') return { error: 'The sync folder was set up by a newer Yomna, or its sync.json is damaged.' };
   const key = deriveKey(passphrase, Buffer.from(head.salt, 'base64'));
   try { if ([CHECK, OLD_CHECK].includes(unseal(key, head.check, 'check'))) return { key }; } catch { /* wrong passphrase */ }
   return { error: "That isn't the passphrase this sync folder was set up with. Use the same one as on your other computer." };

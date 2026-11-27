@@ -1,13 +1,12 @@
 // Tiny chiptune sound kit, synthesised live with Web Audio. Soft pulse and triangle voices through
 // one quiet master and a low-pass, so nothing is shrill. Silent until the first click or key press.
 (() => {
-  const R = window.Jarvis;
-  const KEY = 'jarvis-sound';
+  const R = window.Yomna || window.Jarvis;
+  const KEY = 'yomna-sound';
   const NOTE = { C5: 523.25, E5: 659.25, G5: 783.99, A5: 880, C6: 1046.5, E6: 1318.5, G6: 1568 };
   const GAP = { hop: 0.12, stomp: 0.2, bonk: 0.14, pip: 0.08, snore: 1, blip: 0.05, tick: 0.2, key: 0.03, scribble: 0.06, ping: 0.08 };
   let live = null, enabled = true, unlocked = false;
-  // Before the rename the setting was kept as 'roamie-sound': read it when there's no new one yet.
-  try { enabled = (localStorage.getItem(KEY) ?? localStorage.getItem('roamie-sound')) !== 'off'; } catch {}
+  try { enabled = (localStorage.getItem(KEY) ?? localStorage.getItem('jarvis-sound')) !== 'off'; } catch {}
   const last = {};
 
   const rig = (ac, dest) => {
@@ -133,7 +132,7 @@
   };
 
   const start = () => { if (!live) { const ac = new AudioContext(); live = rig(ac, ac.destination); } live.ac.resume(); unlocked = true; };
-  if (window.JARVIS_AUTOSOUND) start();
+  if (window.YOMNA_AUTOSOUND || window.JARVIS_AUTOSOUND) start();
   addEventListener('pointerdown', start, { capture: true });
   addEventListener('keydown', start, { capture: true });
 

@@ -69,7 +69,7 @@ const REASONS = [
   [/no text field called|no dropdown called/, 'no_field'],
 ];
 const reasonOf = (msg) => REASONS.find(([re]) => re.test(msg))?.[1] ?? 'error';
-// The tools whose error wording is Jarvis's own, with what came off the screen or from the model always in quotes.
+// The tools whose error wording is Yomna's own, with what came off the screen or from the model always in quotes.
 // Not run_command or the web tools: their errors carry command output and page text.
 const SCREEN_TOOLS = new Set(['act_in_app', 'read_window', 'take_screenshot', 'list_windows', 'draw']);
 /** A failure's words, safe for the log, at most 200 characters. Out: everything from a message's first quote to its

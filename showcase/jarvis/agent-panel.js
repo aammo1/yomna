@@ -6,7 +6,7 @@
 // The overlay is click-through, so the host asks Jarvis.panelHit(x, y) whether the cursor is over it.
 // API: Jarvis.panel.open({ status, near }) .status(text) .append(text) .end() .fail(text) .close() .isOpen .onLink
 (() => {
-  const R = window.Jarvis;
+  const R = window.Yomna || window.Jarvis;
   const css = `
 .rp { --bg: #051214; --panel: #071a1c; --ink: #e8fffa; --ink-2: #b4d8d1; --ink-3: #8ab8b0; --accent: #78ffe2;
   --line-hi: #2f7c74; --line-hot: #4fbfa9; --s: 2px; --ease: cubic-bezier(.2, .8, .2, 1);
@@ -41,31 +41,31 @@
 .rp-body p.lead { font-weight: 600; font-size: 13.5px; line-height: 1.5; color: var(--ink); margin-bottom: 10px; }
 .rp-body h4 { margin: 12px 0 6px; font: 600 11px/1.3 "Martian Mono", "Jarvis Arabic", ui-monospace, monospace; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
 .rp-body ul, .rp-body ol { margin: 0 0 8px; padding: 0; list-style: none; }
-.rp-body li { position: relative; padding-left: 16px; margin: 0 0 6px; color: var(--ink-2); }
-.rp-body ul > li::before { content: ""; position: absolute; left: 2px; top: .62em; width: 5px; height: 5px; background: var(--accent); }
+.rp-body li { position: relative; padding-inline-start: 16px; margin: 0 0 6px; color: var(--ink-2); }
+.rp-body ul > li::before { content: ""; position: absolute; inset-inline-start: 2px; top: .62em; width: 5px; height: 5px; background: var(--accent); }
 .rp-body ol { counter-reset: n; }
-.rp-body ol > li { counter-increment: n; padding-left: 22px; }
-.rp-body ol > li::before { content: counter(n) "."; position: absolute; left: 0; color: var(--accent); }
+.rp-body ol > li { counter-increment: n; padding-inline-start: 22px; }
+.rp-body ol > li::before { content: counter(n) "."; position: absolute; inset-inline-start: 0; color: var(--accent); }
 .rp-body b { color: var(--ink); font-weight: 600; }
 .rp-body em { font-style: italic; color: var(--ink); }
 .rp-body s { color: var(--ink-3); }
 .rp-body code { font: inherit; color: var(--accent); }
-/* Arabic and Hebrew paragraphs (dir=auto): the Arabic font first, for its own word spacing; code stays monospace. */
-.rp-body :dir(rtl) { font-family: "Jarvis Arabic RTL", "Martian Mono", "Jarvis Arabic", ui-monospace, Menlo, monospace; }
-.rp-body pre, .rp-body code, .rp-body :dir(rtl) pre, .rp-body :dir(rtl) code { font-family: "Martian Mono", "Jarvis Arabic", ui-monospace, Menlo, monospace; }
+/* Arabic and Hebrew paragraphs (dir=auto): the Arabic font first, for its own word spacing; code stays monospace LTR. */
+.rp-body :dir(rtl) { font-family: "Jarvis Arabic RTL", "Readex Pro", "Martian Mono", "Jarvis Arabic", ui-monospace, Menlo, monospace; }
+.rp-body pre, .rp-body code, .rp-body :dir(rtl) pre, .rp-body :dir(rtl) code { font-family: "Martian Mono", "Jarvis Arabic", ui-monospace, Menlo, monospace; direction: ltr; unicode-bidi: isolate; }
 .rp-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; cursor: pointer; }
 .rp-body a:hover { color: #a8ffed; }
 .rp-body a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .rp-body li > ul, .rp-body li > ol { margin: 6px 0 0; }
-.rp-body blockquote { margin: 0 0 8px; padding: 2px 0 2px 12px; border-left: 2px solid var(--line-hi); color: var(--ink-2); }
+.rp-body blockquote { margin: 0 0 8px; padding: 2px 0; padding-inline-start: 12px; border-inline-start: 2px solid var(--line-hi); color: var(--ink-2); }
 .rp-body blockquote p { margin: 0 0 4px; }
 .rp-body pre { margin: 0 0 10px; padding: 9px 11px; background: #030c0d; border: 1px solid #12302e; overflow-x: auto;
-  font: 400 11.5px/1.55 "Martian Mono", "Jarvis Arabic", ui-monospace, monospace; color: var(--ink-2); white-space: pre; }
+  font: 400 11.5px/1.55 "Martian Mono", "Jarvis Arabic", ui-monospace, monospace; color: var(--ink-2); white-space: pre; direction: ltr; text-align: left; }
 .rp-body pre code { color: inherit; }
 .rp-body hr { border: 0; border-top: 1px solid #12302e; margin: 10px 0; }
 .rp-table { overflow-x: auto; margin: 0 0 10px; }
 .rp-body table { border-collapse: collapse; font-size: 11.5px; line-height: 1.45; min-width: 100%; }
-.rp-body th, .rp-body td { text-align: left; padding: 5px 9px; border-bottom: 1px solid #12302e; vertical-align: top; color: var(--ink-2); }
+.rp-body th, .rp-body td { text-align: start; padding: 5px 9px; border-bottom: 1px solid #12302e; vertical-align: top; color: var(--ink-2); }
 .rp-body th { color: var(--ink); font-weight: 600; border-bottom-color: var(--line-hi); }
 .rp-src { margin: 10px 0 0; padding-top: 9px; border-top: 1px solid #12302e; font-size: 11px; line-height: 1.5; color: var(--ink-3); }
 .rp-caret { display: inline-block; width: 7px; height: 1.05em; vertical-align: -0.15em; background: var(--accent); margin-left: 2px; animation: rp-blink .9s steps(2, jump-none) infinite; }
@@ -81,7 +81,7 @@
   const spans = (parent, list) => {
     for (const sp of list) {
       if (sp.t === 'text') parent.append(sp.s);
-      else if (sp.t === 'code') { const e = mk('code'); e.textContent = sp.s; parent.append(e); }
+      else if (sp.t === 'code') { const e = mk('code'); e.dir = 'ltr'; e.textContent = sp.s; parent.append(e); }
       else if (sp.t === 'a') { const a = mk('a'); a.href = sp.href; a.title = sp.href; spans(a, sp.c); parent.append(a); }
       else { const e = mk(sp.t === 'b' ? 'b' : sp.t === 'i' ? 'em' : 's'); spans(e, sp.c); parent.append(e); }
     }
@@ -99,10 +99,10 @@
       case 'p': { const p = mk('p', blk.lead ? 'lead' : ''); p.dir = 'auto'; spans(p, blk.c); return p; }
       case 'h': { const h = mk('h4'); h.dir = 'auto'; spans(h, blk.c); return h; }
       case 'ul': case 'ol': return list(blk);
-      case 'quote': { const q = mk('blockquote'); for (const b of blk.c) q.append(block(b)); return q; }
-      case 'code': { const pre = mk('pre'), c = mk('code'); c.textContent = blk.s; pre.append(c); return pre; }
+      case 'quote': { const q = mk('blockquote'); q.dir = 'auto'; for (const b of blk.c) q.append(block(b)); return q; }
+      case 'code': { const pre = mk('pre'), c = mk('code'); pre.dir = 'ltr'; c.dir = 'ltr'; c.textContent = blk.s; pre.append(c); return pre; }
       case 'hr': return mk('hr');
-      case 'src': { const p = mk('p', 'rp-src'); p.append('Sources: '); spans(p, blk.c); return p; }
+      case 'src': { const p = mk('p', 'rp-src'); p.dir = 'auto'; p.append('Sources: '); spans(p, blk.c); return p; }
       case 'table': {
         const wrapEl = mk('div', 'rp-table'), t = mk('table'), thead = mk('thead'), tb = mk('tbody'), hr = mk('tr');
         for (const c of blk.head) { const th = mk('th'); th.scope = 'col'; th.dir = 'auto'; spans(th, c); hr.append(th); }
@@ -126,15 +126,16 @@
   };
 
   let el = null, body = null, statusEl = null, text = '', streaming = false, raf = 0, closeTimer = 0, hovered = false, follow = true, drag = null;
-  // Older versions kept where it was last dragged and opened every later card there: that spot is forgotten.
-  try { localStorage.removeItem('roamies.cardPos'); } catch {} // its name from before the rename
+  // Clear any remembered card position so each research card opens in the next free spot.
+  try { localStorage.removeItem('yomna.cardPos'); } catch {}
   const build = () => {
     el = document.createElement('section');
     el.className = 'rp';
+    el.dir = 'auto';
     el.setAttribute('role', 'region');
     el.setAttribute('aria-label', 'Answer from the web');
     const inner = document.createElement('div'); inner.className = 'rp-in';
-    const head = document.createElement('div'); head.className = 'rp-head';
+    const head = document.createElement('div'); head.className = 'rp-head'; head.dir = 'ltr';
     const dot = document.createElement('span'); dot.className = 'rp-dot'; dot.setAttribute('aria-hidden', 'true');
     statusEl = document.createElement('span'); statusEl.className = 'rp-status'; statusEl.setAttribute('aria-live', 'polite');
     const x = document.createElement('button'); x.className = 'rp-x'; x.type = 'button'; x.setAttribute('aria-label', 'Close');

@@ -41,7 +41,10 @@ function safeUser() {
 /** The settings, minus anything secret or personal (keys, tokens, names, emails). */
 export function scrubConfig(value, key = '') {
   if (Array.isArray(value)) return value.map((v) => scrubConfig(v, key));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubConfig(v, k)]));
+  if (value && typeof value === 'object') {
+    if (key === 'env') return Object.fromEntries(Object.keys(value).map((k) => [k, '<redacted>']));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubConfig(v, k)]));
+  }
   if (typeof value === 'string' && /key|token|secret|password|auth|cookie|name$|email/i.test(key) && !/^keys?$/i.test(key)) return value ? '<redacted>' : '';
   return value;
 }
@@ -70,8 +73,8 @@ const show = (v) => (typeof v === 'string' ? v : JSON.stringify(v, null, 2));
 
 /** The report as text: a header, then each section ([title, text or object]) in order, all of it redacted. */
 export function buildReport({ now = new Date(), version = '0.0.0', sections = [] }, scrub = {}) {
-  let out = `Jarvis diagnostics\nMade ${now.toISOString()} by Jarvis ${version}.\n`
-    + 'Send this file to the Jarvis developer: attach it to a GitHub issue (github.com/EricTechPro/jarvis/issues) or send it directly.\n'
+  let out = `Yomna diagnostics\nMade ${now.toISOString()} by Yomna ${version}.\n`
+    + 'Send this file to the Yomna maintainers: attach it to a GitHub issue (github.com/aammo1/yomna/issues) or send it directly.\n'
     + 'Keys, tokens, emails, your home folder and user name have been removed. Look it over before sending if you like.\n';
   for (const [title, body] of sections) {
     const text = body == null || body === '' ? '(none)' : show(body);
@@ -112,7 +115,7 @@ export async function reportDir(home = os.homedir()) {
   return home;
 }
 
-export const reportName = (now = new Date()) => `jarvis-diagnostics-${now.toISOString().slice(0, 19).replace(/[T:]/g, '-')}.log`;
+export const reportName = (now = new Date()) => `yomna-diagnostics-${now.toISOString().slice(0, 19).replace(/[T:]/g, '-')}.log`;
 
 /** Shows the saved file in Finder, Explorer or the file manager. */
 export function reveal(file) {

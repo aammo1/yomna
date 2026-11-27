@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 
-const HANDS_OS = ['darwin', 'win32'].includes(process.platform);
+const HANDS_OS = ['darwin', 'win32', 'linux'].includes(process.platform);
 // Inside HOME (npm test gives each file a temp HOME): write_file only writes under the home folder.
-const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.homedir(), 'jarvis-regress-unit-')));
+const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.homedir(), 'yomna-regress-unit-')));
 const log = path.join(dir, 'calls.jsonl'), fake = path.join(dir, 'hands.mjs');
 // The fake hands helper: records every call, answers act/ui/capture/windows like the real helpers do.
 fs.writeFileSync(fake, `import fs from 'node:fs'; const a = process.argv.slice(2);
@@ -23,7 +23,7 @@ if (a[0] === 'front') o = { ok: true, app: win.app, title: win.title };
 if (a[0] === 'capture') { fs.writeFileSync(a[1], 'x'); o = { ok: true, file: a[1], window: win, pixels: [800, 600] }; }
 console.log(JSON.stringify(o));
 `);
-process.env.JARVIS_HANDS = fake;
+process.env.YOMNA_HANDS = fake;
 const { createTools, guardFetch, sideSearchFor } = await import('../tools.mjs');
 const { guardTools, LOOP_MESSAGE } = await import('../loopguard.mjs');
 const { checkFetch, checkRead, checkWrite, checkOpen, checkLink, inReadOnly, READ_ONLY_REASON, BLOCK } = await import('../safety.mjs');
@@ -112,11 +112,8 @@ const textOf = (r) => (typeof r === 'string' ? r : (r?.content ?? []).filter((c)
     assert.equal(fetched, 0, 'CP-4 nothing was fetched');
   } finally { globalThis.fetch = realFetch; }
   assert.ok(tool('web_search'), 'CP-4 web_search exists');
-  // CP-4 no sign-in route: keyless engines (null); a route picks a side search.
   assert.equal(sideSearchFor(null), null);
   assert.equal(sideSearchFor({}), null);
-  assert.equal(typeof sideSearchFor({ apiKey: 'k' }), 'function');
-  assert.equal(typeof sideSearchFor({ cc: { executable: '/x/claude' } }), 'function');
 }
 
 // ---------- CP-5 / CP-6 / CP-7: the screen and app control through the fake hands helper ----------

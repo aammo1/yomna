@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Jarvis on the desktop</title>
+<title>Yomna</title>
 <style>
   /* Bubble and research-card text (the setup guide's body font). */
   @font-face { font-family: "Martian Mono"; src: url("onboarding/fonts/martian-mono.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
@@ -24,6 +24,12 @@
        words and their ! . , ? sit a normal distance apart instead of a full monospace cell. */
     unicode-range: U+0020-0021, U+0028-0029, U+002C-002E, U+003A-003B, U+003F, U+00A0, U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C-200F, U+2010-2011, U+204F;
   }
+  @font-face {
+    font-family: "Readex Pro";
+    src: url("onboarding/fonts/readex-pro-arabic.woff2") format("woff2");
+    font-weight: 160 700;
+    font-display: swap;
+  }
 /* Headings on drawn cards and tickets. */
   @font-face { font-family: "Doto"; src: url("onboarding/fonts/doto.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
@@ -35,7 +41,7 @@
 </style>
 </head>
 <body>
-<canvas id="stage" aria-label="Jarvis roaming the desktop"></canvas>
+<canvas id="stage" aria-label="Yomna on the desktop"></canvas>
 <script src="jarvis/core.js"></script>
 <script src="jarvis/markdown.js"></script>
 <script src="jarvis/sfx.js"></script>
@@ -51,7 +57,7 @@
 <script src="jarvis/people.js"></script>
 <script src="jarvis/10-dither.js"></script>
 <script src="jarvis/12-sidekick.js"></script>
-<script>Jarvis.bootDesktop(document.getElementById("stage")); document.fonts.load('500 13px "Martian Mono"'); document.fonts.load('500 13px "Jarvis Arabic"', 'م'); document.fonts.load('500 13px "Jarvis Arabic RTL"', 'م ');</script>
+<script>Yomna.bootDesktop(document.getElementById("stage")); document.fonts.load('500 13px "Martian Mono"'); document.fonts.load('500 13px "Jarvis Arabic"', 'م'); document.fonts.load('500 13px "Jarvis Arabic RTL"', 'م '); document.fonts.load('500 13px "Readex Pro"', 'م ');</script>
 <script src="jarvis/ink3d.js"></script>
 <script src="jarvis/world.js"></script>
 <script src="jarvis/ink.js"></script>

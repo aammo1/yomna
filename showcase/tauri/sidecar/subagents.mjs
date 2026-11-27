@@ -1,8 +1,43 @@
-// Subagents: a small crew of specialists the user picks models for. The chat model (the main agent) hands each one a
-// prompt through send_agent's `subagent` argument; the specialist runs as an ordinary background agent (agents.mjs) on
-// the model chosen for it, with its role in front of the brief. Pure pieces here; the launch is in agents.mjs and the
-// settings in sidekick.mjs. A specialist with no model picked is not part of the crew.
-import { isChitchat, jobKinds, parseSpec } from './route.mjs';
+// Subagents: a small crew of specialists the user picks harnesses for. The chat model (the main agent) hands each one a
+// prompt through send_agent's `subagent` argument; the specialist runs as an ordinary background agent (agents.mjs)
+// with its role in front of the brief. Pure pieces here; the launch is in agents.mjs.
+const CHITCHAT = /^\s*(thanks?( you)?|thx|ok(ay)?|cool|nice|great|got it|perfect|awesome|yes|yep|yeah|no|nope|sure|stop|never ?mind|good|hi|hello|hey)\b[\s.!?]*$/i;
+const isChitchat = (text) => CHITCHAT.test(String(text ?? ''));
+
+const JOB_PATTERNS = {
+  computer: [
+    /\b(click|double.?click|right.?click|scroll|drag)\b/i,
+    /\b(type|enter|paste|fill)\b[^.?!]{0,30}\b(into|in the|on the|in this|on this)\b/i,
+    /\b(on|in|at) my (screen|desktop|mac|computer)\b|\bscreenshot\b|\blook at (this|my|the) (window|screen|page|tab)\b/i,
+  ],
+  code: [
+    /\b(write|create|make|build|edit|fix|debug|refactor|rewrite|implement|add|change|update)\b[^.?!]{0,50}\b(code|script|function|program|app|website|web ?page|file|bug|class|component|tests?|endpoint|api|feature|repo|module|query|css|html|sql|regex|config)\b/i,
+    /\b(run|execute)\s+(?:the\s+|my\s+|this\s+|a\s+)?(?:\w+\s+)?(?:command|script|tests?|build|code|program)\b/i,
+    /\b(rename|move|delete|organi[sz]e|sort|tidy|clean up|zip|unzip|copy)\b[^.?!]{0,40}\b(files?|folders?|downloads|directory|directories)\b/i,
+  ],
+  draw: [/\b(draw|diagram|sketch|flow ?chart|mind ?map|infographic|timeline|bar chart|pie chart|line graph|illustrate|visuali[sz]e|plot)\b/i],
+  web: [
+    /\b(search the (web|internet)|search online|look (it|this|that) up|google (it|this|that|for)|browse the web|find out online)\b/i,
+    /\b(research|compare)\b[^.?!]{0,60}\b(online|web|prices?|reviews?|options|sources|articles?|products?)\b/i,
+    /\b(latest|current|recent|today'?s)\s+(news|prices?|rates?|scores?|weather|results?)\b|\bnews about\b/i,
+  ],
+};
+
+function jobKinds(text) {
+  const t = String(text ?? '').trim();
+  if (!t || t.startsWith('(') || isChitchat(t)) return [];
+  const out = [];
+  for (const [kind, patterns] of Object.entries(JOB_PATTERNS)) {
+    if (patterns.some((re) => re.test(t))) out.push(kind);
+  }
+  return out;
+}
+
+export function parseSpec(spec) {
+  const s = String(spec ?? '').trim(), i = s.indexOf(':');
+  if (i <= 0 || i === s.length - 1) return null;
+  return { provider: s.slice(0, i), model: s.slice(i + 1), spec: s };
+}
 
 export const SUBAGENTS = [
   { id: 'scout', label: 'Scout', type: 'researcher', hint: 'Web research.',

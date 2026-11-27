@@ -17,8 +17,6 @@ const FIRST = [
   'safety.test.mjs',
   'voicemodel.test.mjs',
   'agentstream.test.mjs',
-  'claudecode.test.mjs',
-  'providers.test.mjs',
   'toolschema.test.mjs',
   'hands.test.mjs',
   'toolplay.test.mjs',
@@ -29,7 +27,6 @@ const FIRST = [
   'tagplace.test.mjs',
   'intro.test.mjs',
   'speech.test.mjs',
-  'fish.test.mjs',
   'gemini.test.mjs',
   'voicestudio.test.mjs',
   'wintray.test.mjs',
@@ -43,7 +40,6 @@ const FIRST = [
   'askbar.test.mjs',
   'diagnostics.test.mjs',
   'errors.test.mjs',
-  'local.test.mjs',
   'about.test.mjs',
   'agents.test.mjs',
   'agentrun.test.mjs',
@@ -53,8 +49,8 @@ const FIRST = [
 const all = readdirSync(dir).filter((f) => f.endsWith('.test.mjs'));
 const order = [...FIRST.filter((f) => all.includes(f)), ...all.filter((f) => !FIRST.includes(f)).sort()];
 for (const f of order) {
-  // Each file gets its own home folder, so no test ever reads or migrates the real ~/.gg or ~/Jarvis.
-  const data = mkdtempSync(path.join(os.tmpdir(), 'jarvis-test-'));
+  // Each file gets its own home folder, so no test ever reads or migrates the real ~/.gg or ~/Yomna.
+  const data = mkdtempSync(path.join(os.tmpdir(), 'yomna-test-'));
   const r = spawnSync(process.execPath, [path.join(dir, f)], { stdio: 'inherit', env: { ...process.env, HOME: data, USERPROFILE: data } });
   rmSync(data, { recursive: true, force: true });
   if (r.status !== 0) { console.error(`\n${f} failed`); process.exit(r.status ?? 1); }

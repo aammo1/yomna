@@ -1,26 +1,26 @@
-// Side calls: which model folds and learns, the retry, the transcript they read, and what's kept of their reply.
+// Side calls: oneShot over CLI harnessManager, the transcript they read, and what's kept of their reply.
 import assert from 'node:assert/strict';
-import { foldInput, foldPrompt, memoryInput, memoryPrompt, oneShot, parseBrain, sideThinking, summaryModelFor, transcript } from '../brain.mjs';
+import { foldInput, foldPrompt, memoryInput, memoryPrompt, oneShot, parseBrain, transcript } from '../brain.mjs';
 
-// The summary model is gg-core's cheaper pick, unless the current model is cheaper still.
-assert.equal(summaryModelFor('anthropic', 'claude-opus-5-5'), 'claude-sonnet-5-5', 'Opus folds on Sonnet');
-assert.equal(summaryModelFor('anthropic', 'claude-haiku-5-5'), 'claude-haiku-5-5', 'Haiku is already cheaper than Sonnet');
-
-// Side calls think at the model's lowest level, never above the chat's. Regression: Gemini lists only "high",
-// so folds and memory passes ran at high while the chat ran at low.
-assert.equal(sideThinking('gemini', 'gemini-3.8-flash', 'low'), 'low', 'capped at the chat level');
-assert.equal(sideThinking('anthropic', 'claude-sonnet-5-5', 'high'), 'low', 'the lowest level when the chat thinks harder');
-assert.equal(sideThinking('anthropic', 'claude-sonnet-5-5', null), undefined, 'thinking off in the chat: off here too');
-assert.equal(sideThinking('huggingface', 'deepseek-ai/DeepSeek-V4.1-Flash', 'low'), undefined, 'a model that cannot think gets none');
-
-// Summary model first; if that fails, once more on the current model.
+// oneShot routes through a provided run() override or harnessManager.oneShot().
 {
-  const tried = [];
-  const run = async (o) => { tried.push(o.model); if (o.model === 'claude-sonnet-5-5') throw new Error('not on this plan'); return '{"facts":[]}'; };
-  const r = await oneShot({ provider: 'anthropic', model: 'claude-opus-5-5', system: 's', text: 't', run });
-  assert.deepEqual(tried, ['claude-sonnet-5-5', 'claude-opus-5-5']);
-  assert.equal(r.model, 'claude-opus-5-5');
-  await assert.rejects(oneShot({ provider: 'anthropic', model: 'claude-haiku-5-5', system: 's', text: 't', run: async () => { throw new Error('down'); } }), /down/, 'no second try on the same model');
+  const seen = [];
+  const fakeManager = {
+    activeId: 'agy',
+    async oneShot(opts) {
+      seen.push(opts);
+      return '{"facts":[]}';
+    },
+  };
+  const r = await oneShot({ harnessManager: fakeManager, system: 's', text: 't', cwd: '/tmp' });
+  assert.equal(seen.length, 1);
+  assert.equal(r.model, 'agy');
+  assert.equal(r.text, '{"facts":[]}');
+
+  const r2 = await oneShot({ model: 'custom', system: 's', text: 't', run: async () => '{"facts":[]}' });
+  assert.equal(r2.model, 'custom');
+  assert.equal(r2.text, '{"facts":[]}');
+  await assert.rejects(oneShot({ system: 's', text: 't', run: async () => { throw new Error('down'); } }), /down/);
 }
 
 // The reply: JSON (fenced or not), facts redacted and checked, replaces only for ids that exist.

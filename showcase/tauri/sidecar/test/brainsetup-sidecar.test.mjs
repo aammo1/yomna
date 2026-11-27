@@ -8,14 +8,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { accountNames, brainName } from '../secondbrain.mjs';
+import { accountNames, brainName, desktopBrainDir } from '../secondbrain.mjs';
 
 const SIDEKICK = fileURLToPath(new URL('../sidekick.mjs', import.meta.url));
 
 function start(home) {
   const data = path.join(home, 'data');
-  const env = { ...process.env, HOME: home, USERPROFILE: home, JARVIS_DATA_DIR: data };
-  for (const k of Object.keys(env)) if (/_API_KEY$|^JARVIS_HANDS$|^JARVIS_AGENT$/.test(k)) delete env[k];
+  const env = { ...process.env, HOME: home, USERPROFILE: home, YOMNA_DATA_DIR: data };
+  for (const k of Object.keys(env)) if (/_API_KEY$|^YOMNA_HANDS$|^YOMNA_AGENT$|^JARVIS_HANDS$|^JARVIS_AGENT$/.test(k)) delete env[k];
   const child = spawn(process.execPath, [SIDEKICK], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   const out = [], waiters = [];
   let buf = '', err = '';
@@ -41,7 +41,7 @@ function start(home) {
   const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
   return {
     send,
-    config: () => JSON.parse(fs.readFileSync(path.join(data, 'Jarvis', 'Data', 'settings.json'), 'utf8')),
+    config: () => JSON.parse(fs.readFileSync(path.join(data, 'Yomna', 'Data', 'settings.json'), 'utf8')),
     async hello() { const from = out.length; send({ type: 'ob_hello' }); return (await next((m) => m.type === 'onboard' && m.msg?.kind === 'state', 'state', from)).msg; },
     // Sends one ob_brain and resolves with the guide's answer (kind 'brain').
     async brain(m) { const from = out.length; send({ type: 'ob_brain', ...m }); return (await next((x) => x.type === 'onboard' && x.msg?.kind === 'brain', 'brain reply', from)).msg; },
@@ -62,7 +62,7 @@ try {
   // The default: a fresh home (no Desktop folder yet) gets ~/Desktop/<First> OS, made in full, and it's saved.
   {
     const home = tmp(); homes.push(home);
-    const dir = path.join(home, 'Desktop', NAME);
+    const dir = desktopBrainDir(home, NAME);
     const s = start(home);
     const st = await s.hello();
     assert.equal(st.brain?.desktop, dir, 'the guide is told where the default one goes');
@@ -97,7 +97,7 @@ try {
   // the missing pieces added (no _context beside its Wiki).
   {
     const home = tmp(); homes.push(home);
-    const dir = path.join(home, 'Desktop', NAME);
+    const dir = desktopBrainDir(home, NAME);
     fs.mkdirSync(path.join(dir, 'Wiki'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# Rules\n');
     const s = start(home);
@@ -148,7 +148,7 @@ try {
     const home = tmp(); homes.push(home);
     const notes = path.join(home, 'Notes'), wiki = path.join(home, 'Documents', 'Wiki'), other = path.join(home, 'Other');
     for (const d of [notes, wiki, other]) fs.mkdirSync(d, { recursive: true });
-    const settings = path.join(home, 'data', 'Jarvis', 'Data', 'settings.json');
+    const settings = path.join(home, 'data', 'Yomna', 'Data', 'settings.json');
     fs.mkdirSync(path.dirname(settings), { recursive: true });
     const layout = { root: notes, raw: '', context: wiki, research: '', projects: '', agents: '' };
     fs.writeFileSync(settings, JSON.stringify({ onboarded: true, secondBrain: layout }));

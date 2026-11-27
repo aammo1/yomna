@@ -13,12 +13,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-e2e-live-')));
+const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'yomna-e2e-live-')));
 process.env.HOME = process.env.USERPROFILE = tmp;
-process.env.JARVIS_DATA_DIR = path.join(tmp, 'data');
-process.env.JARVIS_FAKE_AGENT = fileURLToPath(new URL('./fakeagent.mjs', import.meta.url));
+process.env.YOMNA_DATA_DIR = path.join(tmp, 'data');
+process.env.YOMNA_FAKE_AGENT = fileURLToPath(new URL('./fakeagent.mjs', import.meta.url));
 process.env.FAKE_LOG = path.join(tmp, 'fake.log');
-const HANDS = ['darwin', 'win32'].includes(process.platform);
+const HANDS = ['darwin', 'win32', 'linux'].includes(process.platform);
 
 // A fake hands helper (same shape as test/hands.test.mjs): logs every call; the window's title comes from title.txt
 // when it exists, so a test can make the screen "change".
@@ -45,7 +45,7 @@ if (a[0] === 'capture') { fs.writeFileSync(a[1], 'x'); o = { ok: true, file: a[1
 console.log(JSON.stringify(o));
 `);
 fs.writeFileSync(callLog, '');
-process.env.JARVIS_HANDS = handsFake;
+process.env.YOMNA_HANDS = handsFake;
 
 // No real network: every fetch is recorded and answered with an empty page.
 const fetched = [];

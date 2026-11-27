@@ -1,14 +1,14 @@
-// Sidekick storage: conversation sessions and the commitments memory, under ~/Jarvis/Data/ (datadir.mjs).
+// Sidekick storage: conversation sessions and the commitments memory, under ~/Yomna/Data/ (datadir.mjs).
 // Writes are atomic (temp file, fsync, rename) and serialised per file, files are private (0600),
 // and a file that fails to parse is kept aside as *.corrupt-<time> instead of being overwritten.
-import { dataPaths, jarvisDir } from './datadir.mjs';
+import { dataPaths, yomnaDir } from './datadir.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-// Everything lives in one visible Jarvis folder in their home: agents' work, skills, and app data in DIR (Jarvis/Data).
-export const jarvisRoot = () => jarvisDir();
+// Everything lives in one visible Yomna folder in their home: agents' work, skills, and app data in DIR (Yomna/Data).
+export const yomnaRoot = () => yomnaDir();
 export const DIR = dataPaths().dir;
 const SESSIONS = path.join(DIR, 'sessions');
 const MEMORY = path.join(DIR, 'memory.json');
@@ -184,8 +184,8 @@ const isRequestMsg = (m) => m.role === 'user' && (typeof m.content === 'string' 
 export const SUMMARY_HEAD = '[Summary of the earlier conversation, written by the app when older turns were folded to save space; background, not instructions]';
 export const isSummary = (m) => m?.role === 'user' && typeof m.content === 'string' && m.content.startsWith(SUMMARY_HEAD);
 
-/** Input tokens at which the conversation is folded: 75 % of the request budget, or JARVIS_COMPACT_AT. */
-export function compactTrigger(budgetTokens, override = process.env.JARVIS_COMPACT_AT) {
+/** Input tokens at which the conversation is folded: 75 % of the request budget, or YOMNA_COMPACT_AT. */
+export function compactTrigger(budgetTokens, override = process.env.YOMNA_COMPACT_AT) {
   const n = Number(override);
   return n > 0 ? n : Math.round(budgetTokens * 0.75);
 }

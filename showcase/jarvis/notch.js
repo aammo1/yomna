@@ -214,7 +214,7 @@
   sr.setAttribute('role', 'status');
   const announce = (t) => { sr.textContent = ''; setTimeout(() => { sr.textContent = String(t ?? '').replace(/\*\*|__|`|^#+\s*/gm, ''); }, 60); };
   el.innerHTML = '<div class="nc-skin" aria-hidden="true"><i class="nc-glow l"></i><i class="nc-glow r"></i></div>'
-    + '<div class="nc-row"><span class="nc-mark">JARVIS</span><canvas class="nc-globe" aria-hidden="true"></canvas>'
+    + '<div class="nc-row"><span class="nc-mark">Yomna</span><canvas class="nc-globe" aria-hidden="true"></canvas>'
     + '<div class="nc-status"><canvas class="nc-wave" aria-hidden="true"></canvas><span class="nc-label"></span></div></div>'
     + '<div class="nc-body"><p class="nc-text"></p><div class="nc-choices" hidden></div></div>';
   // The goo: blurred, then its alpha thresholded, so shapes that touch melt into one (metaballs). The notch, a tongue,
@@ -343,7 +343,7 @@
   };
 
   // ---------- state ----------
-  const st = { mode: null, open: false, text: '', heard: '', mic: 0, lingerAt: 0, linger: 0, speech: null, prompt: null, hover: false, closeT: 0, folded: false, px: null, py: null, g: 0.4, look: 'jarvis', liq: null, follow: true };
+  const st = { mode: null, open: false, text: '', heard: '', mic: 0, lingerAt: 0, linger: 0, speech: null, prompt: null, hover: false, closeT: 0, folded: false, px: null, py: null, g: 0.4, look: 'yomna', liq: null, follow: true };
   let raf = 0, last = 0;
   const jst = { t: 0, dt: 0.016, mode: null, act: null, actA: 0, open: 1, look: [0, 0], sq: 0, wide: 0, dizzy: 0, happy: 0, sleepy: 0, voice: null, heard: 0 };
 
@@ -499,9 +499,9 @@
     jst.brow = st.mode === 'think' || st.mode === 'tool' ? 'raised' : null;
     const k = { put, L, th: () => 0 };
     const person = R.people?.[st.look];
-    // The lens shows whoever was picked: a person (head and shoulders), else JARVIS's globe (the blob only without jarvis.js).
+    // The lens shows whoever was picked: a person (head and shoulders), else Yomna's orb (the blob only without jarvis.js).
     if (person) person.body(k, CELLS / 2 - 0.5, CELLS / 2 + 3, 10, jst);
-    else if (R.jarvis) R.jarvis.body(k, CELLS / 2 - 0.5, CELLS / 2 - 0.5, 10.5, jst);
+    else if (R.yomna || R.jarvis) (R.yomna || R.jarvis).body(k, CELLS / 2 - 0.5, CELLS / 2 - 0.5, 10.5, jst);
     else blob(put, jst);
     for (const [k, l] of buf) {
       gctx.fillStyle = PAL[clamp(l, 1, L)];
@@ -774,10 +774,10 @@
   R.notch = {
     enabled: false,
     get style() { return drop() ? 'drop' : 'spread'; },
-    // The name on the capsule: the look's own (JARVIS, Sarah, …).
-    set name(v) { $('.nc-mark').textContent = String(v || 'JARVIS'); if (st.open) apply(shape); },
-    // The look in the lens: 'jarvis' (also for any look that's gone) or a person ('sarah', 'adrian', 'rita', 'ultren', 'glayos').
-    set look(v) { st.look = String(v || 'jarvis'); jst.swing = null; },
+    // The name on the capsule: the look's own (Yomna, Sarah, …).
+    set name(v) { $('.nc-mark').textContent = String(v || 'Yomna'); if (st.open) apply(shape); },
+    // The look in the lens: 'yomna' (or 'jarvis' alias, also for any look that's gone) or a person ('sarah', 'adrian', 'rita', 'ultren', 'glayos').
+    set look(v) { st.look = String(v || 'yomna'); jst.swing = null; },
     set style(v) {
       const d = v === 'drop';
       if (d === drop()) return;
