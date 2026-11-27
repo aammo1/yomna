@@ -2,13 +2,13 @@
 // as 16 kHz PCM, her voice comes back as 24 kHz PCM, and Gemini's own voice activity detection decides when you've
 // stopped and when you cut in. Calls outlive Google's session limit: the server hands out resumption handles, and a
 // goAway or a drop reconnects with the last good one. The socket is injected (connect has the SDK's shape,
-// ai.live.connect), so tests drive a fake one. Everything Jarvis-specific (prompt, tools, playback, the panel) stays
+// ai.live.connect), so tests drive a fake one. Everything Yomna-specific (prompt, tools, playback, the panel) stays
 // with the caller; this only reports what happened through emit():
 //   {type:'state', state}          connecting | listening | thinking | speaking | closed
 //   {type:'turn'}                  their new turn: the first words heard after her last turn ended (before its caption)
 //   {type:'audio', id, rate, pcm}  a chunk of her voice (base64 PCM16 mono); one id per reply
 //   {type:'audioEnd', id}          that reply's audio is all here
-//   {type:'caption', who, text, done}  who: user | jarvis; text is the whole turn so far; done at the turn's end
+//   {type:'caption', who, text, done}  who: user | yomna; text is the whole turn so far; done at the turn's end
 //   {type:'interrupted'}           you cut in: stop playback now
 //   {type:'toolCall', calls}       [{id, name, args}]; answer with respond()
 //   {type:'toolCancel', ids}       Gemini dropped those calls (you cut in): abort them
@@ -60,7 +60,7 @@ export function createLive({ emit, key, model = DEFAULT_LIVE_MODEL, voice, syste
   };
   const endTurn = () => {
     if (heard) emit({ type: 'caption', who: 'user', text: heard, done: true });
-    if (said) emit({ type: 'caption', who: 'jarvis', text: said, done: true });
+    if (said) emit({ type: 'caption', who: 'yomna', text: said, done: true });
     if (audioOut) emit({ type: 'audioEnd', id: `live-${turn}` });
     heard = said = ''; audioOut = false; turn++; userTurn = true;
   };
@@ -90,6 +90,7 @@ export function createLive({ emit, key, model = DEFAULT_LIVE_MODEL, voice, syste
     const c = m.serverContent;
     if (!c) return;
     if (c.interrupted) {
+      if (audioOut) emit({ type: 'audioEnd', id: `live-${turn}` });
       emit({ type: 'interrupted' });
       audioOut = false; said = ''; turn++;
       setState('listening');
@@ -109,7 +110,7 @@ export function createLive({ emit, key, model = DEFAULT_LIVE_MODEL, voice, syste
     if (live.state === 'listening' && (c.modelTurn?.parts?.length || c.outputTranscription?.text)) setState('thinking');
     if (c.outputTranscription?.text) {
       said += c.outputTranscription.text;
-      emit({ type: 'caption', who: 'jarvis', text: said, done: false });
+      emit({ type: 'caption', who: 'yomna', text: said, done: false });
     }
     if (c.turnComplete) { endTurn(); setState('listening'); }
   }
@@ -124,13 +125,14 @@ export function createLive({ emit, key, model = DEFAULT_LIVE_MODEL, voice, syste
   // Opens a connection (a resumption when resuming); the one before it, if any, is hung up and ignored from then on.
   async function open(resuming) {
     if (resuming && ++tries > RETRIES) return fail('dropped', 'The Live call kept dropping');
+    if (resuming && (heard || said || audioOut)) endTurn();
     const g = ++gen, old = session;
     let ready = false; // until connect() returns, a failure comes back as its error, not as a close
     session = null;
     try { old?.close(); } catch {}
     if (!resuming) setState('connecting');
     const k = val(key);
-    if (!k) return fail('key', 'No Gemini key: add one on the keys card');
+    if (!k) return fail('key', 'No Gemini key: add one in Settings → Speaking & Live');
     try {
       const s = await (connect ?? geminiConnect(k))({
         model,
@@ -146,7 +148,12 @@ export function createLive({ emit, key, model = DEFAULT_LIVE_MODEL, voice, syste
       setState('listening');
     } catch (err) {
       if (g !== gen || stopped) return;
-      fail(reasonFor(err?.message) ?? 'network', err?.message);
+      const why = reasonFor(err?.message);
+      if (resuming && !why && handle && tries < RETRIES) {
+        await new Promise((r) => setTimeout(r, 250));
+        if (g === gen && !stopped) return open(true);
+      }
+      fail(why ?? 'network', err?.message);
     }
   }
 

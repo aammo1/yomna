@@ -345,13 +345,13 @@ cases('read-only loopholes', cmd, [
   // An agent's own folder: overwriting inside it is fine without a yes; outside it, or through a link that leads out
   // of it, still asks, and protected files stay blocked.
   {
-    const own = nodePath.join(home, 'Jarvis', 'Agents', 'Dog page');
+    const own = nodePath.join(home, 'Yomna', 'Agents', 'Dog page');
     fs.mkdirSync(nodePath.join(own, 'files'), { recursive: true });
     fs.writeFileSync(nodePath.join(own, 'files', 'index.html'), 'x');
     fs.writeFileSync(nodePath.join(home, 'notes.txt'), 'x');
     const w = (p, exists = true) => checkWrite(p, home, { exists, own });
     assert.equal(w(nodePath.join(own, 'files', 'index.html')).level, SAFE, 'overwriting in its own folder needs no yes');
-    assert.equal(w('~/Jarvis/Agents/Dog page/files/index.html').level, SAFE, 'also written from ~');
+    assert.equal(w('~/Yomna/Agents/Dog page/files/index.html').level, SAFE, 'also written from ~');
     assert.equal(w('~/notes.txt').level, ASK, 'overwriting outside its folder still asks');
     assert.equal(w(nodePath.join(own, '..', 'other', 'a.txt')).level, ASK, 'a .. out of its folder still asks');
     assert.equal(checkWrite(nodePath.join(own, 'files', 'index.html'), home, { exists: true }).level, ASK, 'without own it asks as before');
@@ -500,33 +500,33 @@ console.log('safety loophole tests: passed');
   console.log('MCP safety tests: passed');
 }
 
-// Skills live in ~/Jarvis/Skills: only save_skill and install_skill (screened, and asked) write there, never
+// Skills live in ~/Yomna/Skills: only save_skill and install_skill (screened, and asked) write there, never
 // write_file or a shell redirect, so a page can't plant one; the agents' folder beside it stays writable.
 {
   const H = '/Users/k';
-  assert.equal(checkWrite('~/Jarvis/Skills/x/SKILL.md', H).level, BLOCK);
-  assert.equal(checkWrite('/Users/k/Jarvis/skills/x/notes.md', H).level, BLOCK, 'any case');
-  assert.equal(checkWrite('~/Jarvis/Agents/a/files/x.md', H).level, SAFE, 'agents still save their work');
-  assert.equal(classifyCommand('echo hi > ~/Jarvis/Skills/x/SKILL.md', H, { exists: () => false }).level, BLOCK);
-  assert.equal(classifyCommand('cp a.md ~/Jarvis/Skills/x/SKILL.md', H, { exists: () => false }).level, ASK, 'a copy asks first');
-  assert.equal(classifyCommand('cat ~/Jarvis/Skills/pdf/SKILL.md', H, { exists: () => false }).level, SAFE, 'reading one is fine');
+  assert.equal(checkWrite('~/Yomna/Skills/x/SKILL.md', H).level, BLOCK);
+  assert.equal(checkWrite('/Users/k/Yomna/skills/x/notes.md', H).level, BLOCK, 'any case');
+  assert.equal(checkWrite('~/Yomna/Agents/a/files/x.md', H).level, SAFE, 'agents still save their work');
+  assert.equal(classifyCommand('echo hi > ~/Yomna/Skills/x/SKILL.md', H, { exists: () => false }).level, BLOCK);
+  assert.equal(classifyCommand('cp a.md ~/Yomna/Skills/x/SKILL.md', H, { exists: () => false }).level, ASK, 'a copy asks first');
+  assert.equal(classifyCommand('cat ~/Yomna/Skills/pdf/SKILL.md', H, { exists: () => false }).level, SAFE, 'reading one is fine');
   console.log('safety (skills folder) tests: passed');
 }
 
-// Jarvis' own data (~/Jarvis/Data: settings, memory, chats) is protected as ~/.gg was: readable, never written by a
+// Yomna's own data (~/Yomna/Data: settings, memory, chats) is protected as ~/.gg was: readable, never written by a
 // tool, and the Windows key store there is never read.
 {
   const H = '/Users/k', WH = 'C:\\Users\\ken';
-  assert.equal(checkWrite('~/Jarvis/Data/settings.json', H).level, BLOCK);
-  assert.equal(checkWrite('/Users/k/jarvis/data/memory.json', H).level, BLOCK, 'any case');
-  assert.equal(checkWrite('C:\\Users\\ken\\Jarvis\\Data\\settings.json', WH).level, BLOCK, 'on Windows too');
-  assert.equal(classifyCommand('echo {} > ~/Jarvis/Data/settings.json', H, { exists: () => false }).level, BLOCK);
-  assert.equal(classifyCommand('rm -rf ~/Jarvis/Data', H, { exists: () => true }).level, ASK, 'deleting asks first, as for ~/.gg');
-  assert.equal(checkRead('~/Jarvis/Data/secrets.json', H).level, BLOCK, 'the Windows key store');
-  assert.equal(checkRead('C:\\Users\\ken\\Jarvis\\Data\\secrets.json', WH).level, BLOCK);
-  assert.equal(checkRead('~/Jarvis/Data/logs/2026-11-18.log', H).level, SAFE, 'reading its own logs is fine');
-  assert.equal(checkWrite('~/Jarvis/Database/x.md', H).level, SAFE, 'only the Data folder itself');
-  assert.equal(checkWrite('~/Jarvis/Agents/a/files/Data/x.md', H).level, SAFE, 'an agent folder named Data is theirs');
+  assert.equal(checkWrite('~/Yomna/Data/settings.json', H).level, BLOCK);
+  assert.equal(checkWrite('/Users/k/yomna/data/memory.json', H).level, BLOCK, 'any case');
+  assert.equal(checkWrite('C:\\Users\\ken\\Yomna\\Data\\settings.json', WH).level, BLOCK, 'on Windows too');
+  assert.equal(classifyCommand('echo {} > ~/Yomna/Data/settings.json', H, { exists: () => false }).level, BLOCK);
+  assert.equal(classifyCommand('rm -rf ~/Yomna/Data', H, { exists: () => true }).level, ASK, 'deleting asks first, as for ~/.gg');
+  assert.equal(checkRead('~/Yomna/Data/secrets.json', H).level, BLOCK, 'the Windows key store');
+  assert.equal(checkRead('C:\\Users\\ken\\Yomna\\Data\\secrets.json', WH).level, BLOCK);
+  assert.equal(checkRead('~/Yomna/Data/logs/2026-11-18.log', H).level, SAFE, 'reading its own logs is fine');
+  assert.equal(checkWrite('~/Yomna/Database/x.md', H).level, SAFE, 'only the Data folder itself');
+  assert.equal(checkWrite('~/Yomna/Agents/a/files/Data/x.md', H).level, SAFE, 'an agent folder named Data is theirs');
   console.log('safety (data folder) tests: passed');
 }
 

@@ -27,12 +27,12 @@ assert.match(wl, /never waits for a click or hover/, 'Wayland: no waiting on wha
 assert.match(platformLine('linux', {}), /^Platform: Linux on x64, a desktop on Wayland\./, 'not told the session: the careful answer');
 
 // The session: what the app says, else the same signs it reads.
-assert.equal(linuxSession({ JARVIS_SESSION: 'x11', WAYLAND_DISPLAY: 'wayland-0' }), 'x11', 'the app knows best');
-assert.equal(linuxSession({ JARVIS_SESSION: 'wayland' }), 'wayland');
+assert.equal(linuxSession({ YOMNA_SESSION: 'x11', WAYLAND_DISPLAY: 'wayland-0' }), 'x11', 'the app knows best');
+assert.equal(linuxSession({ YOMNA_SESSION: 'wayland' }), 'wayland');
 assert.equal(linuxSession({ XDG_SESSION_TYPE: 'wayland' }), 'wayland');
 assert.equal(linuxSession({ WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' }), 'wayland');
 assert.equal(linuxSession({ XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }), 'x11');
-assert.equal(linuxSession({ JARVIS_SESSION: 'nonsense' }), 'x11');
+assert.equal(linuxSession({ YOMNA_SESSION: 'nonsense' }), 'x11');
 
 // The pointer over other apps and global shortcuts: everywhere but Wayland.
 assert.ok(seesPointer('darwin') && seesPointer('win32') && seesPointer('linux', 'x11') && !seesPointer('linux', 'wayland') && !seesPointer('linux', ''));
@@ -42,13 +42,13 @@ assert.ok(hasVoice('darwin') && hasVoice('win32') && hasVoice('linux') && !hasVo
 assert.ok(!needsVoiceModel('darwin') && needsVoiceModel('win32') && needsVoiceModel('linux'));
 // The wake word (#97): Apple's speech on macOS, the Parakeet helper on Windows and Linux.
 assert.ok(hasWakeWord('darwin') && hasWakeWord('win32') && hasWakeWord('linux') && !hasWakeWord('freebsd'));
-// No hands helper on Linux yet: nothing reads or works other apps, no area snap, no circling.
+// Hands helper on Linux: available when YOMNA_HANDS is present, degrades safely when absent; still no circling.
 assert.ok(!hasHands('linux', '') && !canSnap('linux', '') && !canCircle('linux'));
 
-// Ask About an Area needs the helper's area selection: macOS, and Windows with the helper there.
-assert.ok(canSnap('darwin', '') && canSnap('win32', 'C:\\Jarvis\\jarvis-hands.exe'));
-assert.ok(!canSnap('win32', '') && !canSnap('linux', '/x/jarvis-hands'));
-assert.ok(hasHands('darwin', '') && hasHands('win32', 'x') && !hasHands('win32', ''));
+// Ask About an Area needs the helper's area selection: macOS, and Windows/Linux with the helper there.
+assert.ok(canSnap('darwin', '') && canSnap('win32', 'C:\\Yomna\\yomna-hands.exe') && canSnap('linux', '/x/yomna-hands'));
+assert.ok(!canSnap('win32', '') && !canSnap('linux', ''));
+assert.ok(hasHands('darwin', '') && hasHands('win32', 'x') && !hasHands('win32', '') && hasHands('linux', '/x/yomna-hands'));
 assert.ok(canCircle('darwin') && canCircle('win32') && !canCircle('linux'));
 
 // With the helper there, its tools are offered on any system (Windows has one now).

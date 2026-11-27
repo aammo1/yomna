@@ -1,6 +1,5 @@
-// Jarvis's own brain inside a Gemini Live call (live.mjs): the same prompt Classic builds, plus a few lines for talking
-// out loud, and the same tools. The tools are declared to Gemini here, in one place, and every call Gemini makes runs
-// through that tool's own execute, so Allow prompts, allowActions, skipAllow and read-only folders work as in Classic.
+// Yomna's brain inside a Gemini Live call (live.mjs): the prompt Classic builds, plus guidance for talking out loud,
+// and the active tools plus built-in delegate_to_harness for handing heavy work to the background CLI harness.
 // Everything else (the hotkey, playback, captions, the panel) stays with the caller, which hears it through emit():
 // every live.mjs event except toolCall/toolCancel (handled here), plus
 //   {type:'tool', id, name, args}      a tool started (args as Gemini sent them)
@@ -8,20 +7,63 @@
 //                                      answer's text or error (none when cancelled)
 // A cancelled call (they cut in) is aborted and gets no answer. A picture in a tool's result (a screenshot) goes into
 // the call as an image, its text as the answer. news() holds a background agent's report until the call is quiet.
-import { resolveToolSchema } from '@kenkaiiii/gg-ai';
-import { unknownToolMessage } from '@kenkaiiii/gg-agent';
+import { z } from 'zod';
 import { createLive, val } from './live.mjs';
 import { SLOW_TOOLS } from './tools.mjs';
 
-export const LIVE_GUIDANCE = `You're in a live voice call: everything you say is heard out loud, the moment you say it, and they can cut in any time. Talk like on the phone: one to three short sentences, plain words, contractions. No markdown, lists, emoji, links, code, file paths, bracketed cues or tags like [happy]: they'd be read aloud. Name the site, file or app instead. Before anything slow (the web, a page, the screen, an app, a command), say a short beat like "On it, one sec." and keep talking with them while it runs. When a result comes back, tell them briefly. Never say you don't know something about them before looking it up with your tools (their second brain, if they have one). Reply in the language they're speaking and keep that one language for the whole call: never switch because a bit of audio was unclear or sounded foreign, only when they clearly switch themselves. If you're not sure, use English.`;
+export const DELEGATE_TOOL_NAME = 'delegate_to_harness';
+export const DELEGATE_TOOL = {
+  name: DELEGATE_TOOL_NAME,
+  description: 'Delegate coding, file editing, research, or multi-step desktop work to the active background CLI agent harness while staying live on the voice call.',
+  parameters: z.object({
+    prompt: z.string().min(1),
+    context: z.string().optional(),
+  }),
+};
+
+export const LIVE_SLOW_TOOLS = new Set([...SLOW_TOOLS, DELEGATE_TOOL_NAME]);
+
+export const LIVE_GUIDANCE = `You're in a live voice call: everything you say is heard out loud, the moment you say it, and they can cut in any time. Talk like on the phone: one to three short sentences, plain words, contractions. No markdown, lists, emoji, links, code, file paths, bracketed cues or tags like [happy]: they'd be read aloud. Name the site, file or app instead. Before anything slow (the web, a page, the screen, an app, a command, or delegating to the coding harness), say a short beat like "On it, one sec." and keep talking with them while it runs. When a result comes back, tell them briefly. Never say you don't know something about them before looking it up with your tools (their second brain, if they have one). Reply in the language they're speaking and keep that one language for the whole call: never switch because a bit of audio was unclear or sounded foreign, only when they clearly switch themselves. If you're not sure, use English.`;
+
+/** Convert a tool's Zod v4 schema (or JSON Schema object) into a plain JSON Schema for Gemini Live. */
+export function resolveToolSchema(tool) {
+  const params = tool?.parameters;
+  if (!params) return { type: 'object', properties: {} };
+  if (typeof params.safeParse === 'function' || params._zod || params._def) {
+    const schema = z.toJSONSchema(params, { unrepresentable: 'any' });
+    if (schema && typeof schema === 'object' && '$schema' in schema) {
+      const { $schema, ...rest } = schema;
+      return rest;
+    }
+    return schema;
+  }
+  if (typeof params === 'object') return params;
+  throw new Error(`Unsupported schema for tool "${tool?.name ?? 'unknown'}"`);
+}
+
+function unknownToolMessage(name, available = []) {
+  const list = available.length ? ` Available tools: ${available.join(', ')}.` : '';
+  return `Unknown tool "${name}".${list}`;
+}
+
+const withDelegateTool = (list) => {
+  const items = Array.isArray(list) ? list : [];
+  return items.some((t) => t?.name === DELEGATE_TOOL_NAME) ? items : [...items, DELEGATE_TOOL];
+};
 
 /** The tools as Live function declarations: [{functionDeclarations}] for the session's config.tools. */
-export function liveDeclarations(tools, slow = SLOW_TOOLS) {
+export function liveDeclarations(tools = [], slow = LIVE_SLOW_TOOLS) {
   const functionDeclarations = [];
-  for (const t of tools) {
+  for (const t of withDelegateTool(tools)) {
     let schema;
     try { schema = resolveToolSchema(t); } catch { continue; } // unconvertible schema: left out
-    functionDeclarations.push({ name: t.name, description: t.description, parametersJsonSchema: schema, ...(slow.has(t.name) ? { behavior: 'NON_BLOCKING' } : {}) });
+    const nonBlocking = t.name === DELEGATE_TOOL_NAME || slow.has(t.name);
+    functionDeclarations.push({
+      name: t.name,
+      description: t.description,
+      parametersJsonSchema: schema,
+      ...(nonBlocking ? { behavior: 'NON_BLOCKING' } : {}),
+    });
   }
   return [{ functionDeclarations }];
 }
@@ -42,18 +84,37 @@ export const langLine = (code) => {
   return `\nThey've set their language to ${name}: reply in it unless they speak another.`;
 };
 
+function pushResultImages(raw, live, signal) {
+  if (!raw || typeof raw !== 'object' || signal?.aborted) return;
+  if (raw.screenshot) {
+    const img = typeof raw.screenshot === 'string' ? { data: raw.screenshot, mediaType: 'image/png' } : raw.screenshot;
+    if (img?.data) live.pushImage(img.data, img.mediaType ?? 'image/png');
+  }
+  if (Array.isArray(raw.images)) {
+    for (const item of raw.images) {
+      if (signal?.aborted) break;
+      const img = typeof item === 'string' ? { data: item, mediaType: 'image/png' } : item;
+      if (img?.data) live.pushImage(img.data, img.mediaType ?? 'image/png');
+    }
+  }
+}
+
 /**
  * tools: the tool array (or a function returning it, read on every connect and call). system: a function returning the
- * prompt Classic would send (personality, memory, second brain, focus, crew). The rest goes to createLive (key, model,
+ * prompt Classic would send (personality, memory, second brain, focus, crew). onDelegate: async ({ prompt, context }, opts) => summary
+ * callback invoked by the built-in non-blocking delegate_to_harness tool. The rest goes to createLive (key, model,
  * voice, connect). speechLang: 'auto' or a locale like 'ar-SA' (a value or a function, read on every connect); a locale
  * is named in the prompt. Native-audio Live models take their language from the conversation and the system
  * instruction (the Live API guide), so it isn't sent as speechConfig.languageCode.
  */
-export function createLiveBrain({ emit, tools, system, slow = SLOW_TOOLS, speechLang = 'auto', ...liveOpts }) {
+export function createLiveBrain({ emit, tools = [], system, slow = LIVE_SLOW_TOOLS, speechLang = 'auto', onDelegate = null, ...liveOpts }) {
   const running = new Map(); // call id → AbortController
   const held = []; // agent news waiting for a quiet moment
   const quiet = () => live.state === 'listening' && !running.size;
   const flush = () => { while (held.length && quiet()) live.pushNote(held.shift()); };
+  const isSlow = (name) => name === DELEGATE_TOOL_NAME || slow.has(name);
+  const resolvedTools = () => withDelegateTool(val(tools));
+
   const live = createLive({
     ...liveOpts,
     systemInstruction: () => `${val(system) ?? ''}\n\n${LIVE_GUIDANCE}${langLine(val(speechLang))}`,
@@ -66,18 +127,36 @@ export function createLiveBrain({ emit, tools, system, slow = SLOW_TOOLS, speech
     },
   });
 
+  const news = (text) => { held.push(String(text)); flush(); };
+
   // Parallel calls in one turn are answered together, one toolResponse per kind once the last of that kind is done:
   // one per result made her answer once per result. The quick (blocking) ones and the slow (NON_BLOCKING) ones go
   // separately, so a slow one never holds back what Gemini is waiting on. toolEnd fires as the answer goes out. A
   // cancelled call is dropped at once (its tool may ignore the abort) and gets no answer.
   function batch(calls) {
-    for (const group of [calls.filter((c) => !slow.has(c.name)), calls.filter((c) => slow.has(c.name))]) if (group.length) answer(group);
+    for (const group of [calls.filter((c) => !isSlow(c.name)), calls.filter((c) => isSlow(c.name))]) if (group.length) answer(group);
   }
   async function answer(group) {
     const done = (await Promise.all(group.map(run))).filter(Boolean);
     for (const { id, name, ok, response } of done) emit({ type: 'toolEnd', id, name, ok, output: response.output ?? response.error });
     if (done.length) live.respond(done.map(({ id, name, response }) => ({ id, name, response })));
     flush();
+  }
+
+  async function runDelegate(parsed, { signal, toolCallId }) {
+    if (typeof onDelegate !== 'function') throw new Error('Background harness delegation is not configured.');
+    const raw = await onDelegate(
+      { prompt: parsed.prompt, context: parsed.context },
+      { signal, toolCallId, news, pushImage: (data, mediaType = 'image/png') => { if (!signal.aborted) live.pushImage(data, mediaType); } },
+    );
+    pushResultImages(raw, live, signal);
+    if (typeof raw === 'string') return raw;
+    if (raw && typeof raw === 'object') {
+      if (Array.isArray(raw.content)) return raw;
+      const summary = raw.summary ?? raw.output ?? raw.text ?? raw.content;
+      if (summary != null) return String(summary);
+    }
+    return 'Delegated to background harness.';
   }
 
   async function run({ id, name, args }) {
@@ -88,9 +167,13 @@ export function createLiveBrain({ emit, tools, system, slow = SLOW_TOOLS, speech
     const work = (async () => {
       let response, ok = false;
       try {
-        const tool = val(tools).find((t) => t.name === name);
-        if (!tool) throw new Error(unknownToolMessage(name, val(tools).map((t) => t.name)));
-        const raw = await tool.execute(parse(tool, args), { signal: ac.signal, toolCallId: id });
+        const list = resolvedTools();
+        const tool = list.find((t) => t.name === name);
+        if (!tool) throw new Error(unknownToolMessage(name, list.map((t) => t.name)));
+        const parsed = parse(tool, args);
+        const raw = name === DELEGATE_TOOL_NAME && !tool.execute
+          ? await runDelegate(parsed, { signal: ac.signal, toolCallId: id })
+          : await tool.execute(parsed, { signal: ac.signal, toolCallId: id });
         const content = typeof raw === 'string' ? raw : raw?.content ?? '';
         const parts = typeof content === 'string' ? [{ type: 'text', text: content }] : content;
         for (const b of parts) if (b.type === 'image' && !ac.signal.aborted) live.pushImage(b.data, b.mediaType);
@@ -119,8 +202,8 @@ export function createLiveBrain({ emit, tools, system, slow = SLOW_TOOLS, speech
     },
     /** True when nothing is going on in the call: she isn't talking or thinking and no tool is running. */
     quiet,
-    /** A background agent's news (newsDesk's enqueue text): into the call now if quiet, else at the next quiet moment. */
-    news(text) { held.push(String(text)); flush(); },
+    /** A background agent's news: into the call now if quiet, else at the next quiet moment. */
+    news,
     pushAudio: (pcm) => live.pushAudio(pcm),
     pushImage: (data, mimeType) => live.pushImage(data, mimeType),
   };

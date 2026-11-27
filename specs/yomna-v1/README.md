@@ -69,10 +69,10 @@ graph TD
 - [x] [task-04-linux-hyprland-overlay-and-voice-win](./tasks/task-04-linux-hyprland-overlay-and-voice-win.md) — Fix Hyprland overlay, 60s screenshot thread leak, PipeWire mic filter, and `voice-win` 16 kHz Live PCM streaming
 
 ### Wave 2
-- [ ] [task-05-harness-adapter-framework](./tasks/task-05-harness-adapter-framework.md) — Build pluggable background CLI harness framework (`agy`, `opencode`, `pi`, `claude`, custom ACP) with auto-detect & hang watchdog
-- [ ] [task-06-yomna-desktop-mcp-server](./tasks/task-06-yomna-desktop-mcp-server.md) — Build `yomna-desktop` local MCP server for screen/draw/app-control/reminders and rebrand core data/secrets/safety paths
-- [ ] [task-07-keyless-local-tts-and-live-bridge](./tasks/task-07-keyless-local-tts-and-live-bridge.md) — Build local Kokoro/Piper + Edge TTS drivers, remove Fish Audio, and wire Gemini Live `delegate_to_harness`
-- [ ] [task-08-hands-linux-helper](./tasks/task-08-hands-linux-helper.md) — Build `hands-linux` Rust helper (Hyprland IPC, `slurp`/`grim` area snap, `wtype`/`ydotool`, AT-SPI2)
+- [x] [task-05-harness-adapter-framework](./tasks/task-05-harness-adapter-framework.md) — Build pluggable background CLI harness framework (`agy`, `opencode`, `pi`, `claude`, custom ACP) with auto-detect & hang watchdog
+- [x] [task-06-yomna-desktop-mcp-server](./tasks/task-06-yomna-desktop-mcp-server.md) — Build `yomna-desktop` local MCP server for screen/draw/app-control/reminders and rebrand core data/secrets/safety paths
+- [x] [task-07-keyless-local-tts-and-live-bridge](./tasks/task-07-keyless-local-tts-and-live-bridge.md) — Build local Kokoro/Piper + Edge TTS drivers, remove Fish Audio, and wire Gemini Live `delegate_to_harness`
+- [x] [task-08-hands-linux-helper](./tasks/task-08-hands-linux-helper.md) — Build `hands-linux` Rust helper (Hyprland IPC, `slurp`/`grim` area snap, `wtype`/`ydotool`, AT-SPI2)
 
 ### Wave 3
 - [ ] [task-09-sidecar-wireup-and-gg-removal](./tasks/task-09-sidecar-wireup-and-gg-removal.md) — Wire harnesses, `yomna-desktop` MCP, local TTS, and Linux/Windows Gemini Live into `sidekick.mjs` and remove `@kenkaiiii/gg-*`

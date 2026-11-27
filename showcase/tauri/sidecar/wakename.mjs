@@ -1,16 +1,16 @@
-// The wake word's name: Jarvis ("Hey Jarvis"), or one the user picks ("Hey Friday"). The voice helper
+// The wake word's name: Yomna ("Hey Yomna"), or one the user picks ("Hey Friday"). The voice helper
 // (voice/main.swift, WakeWord.setName) applies the same rule; this one turns a typed name into one to save, or says
 // why not, before it gets that far.
-export const DEFAULT_WAKE_NAME = 'Jarvis';
-// Words people say all the time: as a wake name, "Hey there"-style chatter would wake Jarvis.
+export const DEFAULT_WAKE_NAME = 'Yomna';
+// Words people say all the time: as a wake name, "Hey there"-style chatter would wake Yomna.
 const COMMON = new Set(['hello', 'there', 'okay', 'yeah', 'thanks', 'sorry', 'right', 'what', 'this', 'that', 'with', 'have',
   'just', 'like', 'about', 'would', 'could', 'really', 'maybe', 'guys', 'everyone', 'everybody', 'buddy', 'listen', 'look',
   'siri', 'alexa', 'google']);
 
-/** Typed text → { ok: true, name } (name '' means back to Jarvis) or { ok: false, why }. */
+/** Typed text → { ok: true, name } (name '' means back to Yomna) or { ok: false, why }. */
 export function cleanWakeName(raw) {
   const t = String(raw ?? '').trim().replace(/^(hey|hi)[\s,]+/i, '');
-  if (!t || /^jarvis$/i.test(t)) return { ok: true, name: '' };
+  if (!t || /^yomna$/i.test(t)) return { ok: true, name: '' };
   if (/\s/.test(t)) return { ok: false, why: 'Just one word, please, like Friday.' };
   const w = t.replace(/[^\p{L}]/gu, '');
   if (w.length !== t.length) return { ok: false, why: 'Letters only, please.' };

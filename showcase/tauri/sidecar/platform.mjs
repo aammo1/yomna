@@ -21,9 +21,9 @@ export function platformLine(platform, { macVersion = '', arch = '', release = '
   return `Platform: ${platform}.`;
 }
 
-/** Linux: "x11" or "wayland". The app says which (JARVIS_SESSION); run without it, the same signs the app reads. */
+/** Linux: "x11" or "wayland". The app says which (YOMNA_SESSION); run without it, the same signs the app reads. */
 export function linuxSession(env = process.env) {
-  if (env.JARVIS_SESSION === 'x11' || env.JARVIS_SESSION === 'wayland') return env.JARVIS_SESSION;
+  if (env.YOMNA_SESSION === 'x11' || env.YOMNA_SESSION === 'wayland') return env.YOMNA_SESSION;
   return String(env.XDG_SESSION_TYPE ?? '').toLowerCase() === 'wayland' || env.WAYLAND_DISPLAY ? 'wayland' : 'x11';
 }
 
@@ -32,7 +32,7 @@ export function linuxSession(env = process.env) {
 export const seesPointer = (platform, session) => platform !== 'linux' || session === 'x11';
 
 /** Whether the app can hold global shortcuts and watch the talk keys itself. On Wayland no app can: there the
- *  user binds keys to `jarvis --summon`, `--talk` and the rest in the desktop's keyboard settings. */
+ *  user binds keys to `yomna --summon`, `--talk` and the rest in the desktop's keyboard settings. */
 export const hasHotkeys = (platform, session) => platform !== 'linux' || session === 'x11';
 
 /** The pairs offered for the talk keys (held to talk), the default first: the setup guide's lists. On a PC no Win key
@@ -82,16 +82,16 @@ export const hasVoice = (platform) => platform === 'darwin' || platform === 'win
 /** The speech model has to be downloaded first (Parakeet): Windows and Linux. */
 export const needsVoiceModel = (platform) => platform === 'win32' || platform === 'linux';
 
-/** The wake word ("Hey Jarvis"): Apple's speech on macOS, the Parakeet helper on Windows and Linux. */
+/** The wake word ("Hey Yomna"): Apple's speech on macOS, the Parakeet helper on Windows and Linux. */
 export const hasWakeWord = (platform) => platform === 'darwin' || needsVoiceModel(platform);
 
 /** Whether the hands helper's tools are on: always on macOS (they explain what's missing), elsewhere when the
- *  helper is there (Jarvis sets JARVIS_HANDS to it). */
+ *  helper is there (Yomna sets YOMNA_HANDS to it). */
 export const hasHands = (platform, hands) => platform === 'darwin' || !!hands;
 
-/** Ask About an Area (the snap shortcut and menu item): the helper's area selection, on macOS and Windows.
- *  Linux has no hands helper yet, so none of the three below. */
-export const canSnap = (platform, hands) => platform === 'darwin' || (platform === 'win32' && !!hands);
+/** Ask About an Area (the snap shortcut and menu item): the helper's area selection, on macOS, Windows, and Linux
+ *  when the hands helper is present. */
+export const canSnap = (platform, hands) => platform === 'darwin' || ((platform === 'win32' || platform === 'linux') && !!hands);
 
 /** Circling something while holding the talk keys: the voice helper draws it, on macOS and Windows. */
 export const canCircle = (platform) => platform === 'darwin' || platform === 'win32';
