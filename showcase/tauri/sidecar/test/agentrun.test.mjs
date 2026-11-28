@@ -126,6 +126,20 @@ assert.equal(c.returns, 'answer');
   await doneD;
 }
 
+// Real CLI harness finish helpers: preserve filenames with dots, strip markdown links, and collect files/ outputs.
+{
+  const { cleanOutcome, collectFiles } = await import('../agentrun.mjs');
+  assert.equal(cleanOutcome('Created [files/hello.txt](file:///tmp/files/hello.txt) successfully. More details here.'), 'Created files/hello.txt successfully.');
+  assert.equal(cleanOutcome('', [{ path: 'files/report.md', what: '' }]), 'Created report.md.');
+  const sampleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yomna-collect-'));
+  fs.mkdirSync(path.join(sampleDir, 'files', 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(sampleDir, 'files', 'hello.txt'), 'hi');
+  fs.writeFileSync(path.join(sampleDir, 'files', 'nested', 'index.html'), '<h1>ok</h1>');
+  const found = (await collectFiles(sampleDir)).map((f) => f.path).sort();
+  assert.deepEqual(found, ['files/hello.txt', 'files/nested/index.html']);
+  fs.rmSync(sampleDir, { recursive: true, force: true });
+}
+
 mgr.stopAll();
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('agentrun tests: passed');

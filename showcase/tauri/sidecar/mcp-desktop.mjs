@@ -214,11 +214,153 @@ export const DESKTOP_TOOLS = [
     },
   },
   {
+    name: 'update_job',
+    description: 'Pause, resume, run now, remove, or reschedule a scheduled background routine by id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 12 },
+        action: { type: 'string', enum: ['pause', 'resume', 'run_now', 'remove'] },
+        due: { type: 'string', maxLength: 40 },
+        repeat: { type: 'string', maxLength: 60 },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_jobs',
     description: 'List scheduled background routines, next run times, and last run status.',
     inputSchema: {
       type: 'object',
       properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'send_agent',
+    description: 'Start a background agent (maker, researcher, organizer, or operator) to work asynchronously in its own folder under ~/Yomna/Agents.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['maker', 'researcher', 'organizer', 'operator'] },
+        subagent: { type: 'string', maxLength: 40 },
+        title: { type: 'string', minLength: 1, maxLength: 60 },
+        brief: { type: 'string', minLength: 1, maxLength: 8000 },
+        inputs: { type: 'array', items: { type: 'string', maxLength: 500 }, maxItems: 10 },
+        deliver_to: { type: 'string', maxLength: 500 },
+        continue: { type: 'string', maxLength: 12 },
+        returns: { type: 'string', enum: ['files', 'answer'] },
+        model: { type: 'string', maxLength: 80 },
+      },
+      required: ['title', 'brief'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'tell_agent',
+    description: 'Send follow-up instructions to a running or finished background agent by id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 12 },
+        message: { type: 'string', minLength: 1, maxLength: 2000 },
+      },
+      required: ['id', 'message'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'stop_agent',
+    description: 'Stop a running background agent by id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 12 },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'answer_agent',
+    description: 'Answer a pending confirmation prompt from a waiting background agent by id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 12 },
+        allow: { type: 'boolean' },
+      },
+      required: ['id', 'allow'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'agent_report',
+    description: 'Read a background agent’s history, status, and created files by id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 12 },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'add_connection',
+    description: 'Connect an external app or service via its MCP server (HTTP URL or local stdio command), or import from Claude Desktop. Always confirms with the user first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', maxLength: 32 },
+        url: { type: 'string', maxLength: 500 },
+        command: { type: 'string', maxLength: 200 },
+        args: { type: 'array', items: { type: 'string', maxLength: 500 }, maxItems: 30 },
+        env_keys: { type: 'array', items: { type: 'string', maxLength: 60 }, maxItems: 8 },
+        header_keys: { type: 'array', items: { type: 'string', maxLength: 60 }, maxItems: 4 },
+        bearer: { type: 'boolean' },
+        import_from: { type: 'string', enum: ['claude-desktop'] },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_connection',
+    description: 'Remove a connected external MCP server and its stored credentials.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', maxLength: 32 },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'connection_tools',
+    description: 'List the tools exposed by a connected external MCP server.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        server: { type: 'string', maxLength: 32 },
+        query: { type: 'string', maxLength: 100 },
+      },
+      required: ['server'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'use_connection',
+    description: 'Call a tool on a connected external MCP server (args as a JSON object string).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        server: { type: 'string', maxLength: 32 },
+        tool: { type: 'string', maxLength: 100 },
+        args: { type: 'string', maxLength: 20000 },
+      },
+      required: ['server', 'tool'],
       additionalProperties: false,
     },
   },

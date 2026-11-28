@@ -464,6 +464,7 @@ const { tools, hands, whereNow, frontNow: frontData, frontBounds, ink, nextTurn,
   onHandoff: (task) => { activity.handoff(task); panel(); },
   commitmentsText: () => [commitmentsText(), doneTodayText() && `Done today:\n${doneTodayText()}`].filter(Boolean).join('\n'),
   onCommitments: (c) => { menu(); scheduleReminders(); showList({ flash: c?.id, seconds: 6 }); syncSoon(); },
+  onFacts: () => { menu(); syncSoon(); },
   showList: () => showList({ seconds: 20 }),
   fmtWhen: (ms) => fmtWhen(ms),
   onPlan: (args) => trail.plan(args),
@@ -480,19 +481,6 @@ tools.push({
   description: 'How Yomna works: where it lives, its menus, the panel and each settings page, CLI harnesses, voice modes, updates, and what to do when something is not working. Call it before answering a question about the app.',
   parameters: z.object({}),
   execute: async () => aboutYomna({ name: lookName(), looks: LOOKS.map(([, label]) => label), mac: MAC, linux: LINUX, snap: SNAP_OK, pointer: POINTER_OK, voice: VOICE_OK, hotkeys: HOTKEYS_OK, wake: VOICE_OK && WAKE_OK }),
-});
-
-let desktopMcp = null;
-const desktopMcpReady = createDesktopMcpBridge({
-  ...desktopHandlers,
-  onToolCall: ({ name, args }) => logLine('mcp_desktop', { name, args }),
-}).then((bridge) => {
-  desktopMcp = bridge;
-  logLine('mcp_desktop_ready', { socket: bridge.socketPath });
-  return bridge;
-}).catch((e) => {
-  console.error('[mcp-desktop] failed to start:', e.message);
-  return null;
 });
 
 // Background agents (agents.mjs): each runs in its own process on the configured CLI harness.
@@ -513,15 +501,40 @@ const agents = createAgents({
 tools.push(...agents.tools);
 // Connections (mcp.mjs): external apps and services through their MCP servers.
 const mcp = createMcp({ secrets, log: (kind, data) => logLine(kind, data) });
-tools.push(...createMcpTools({
+const mcpTools = createMcpTools({
   mcp, ask, isYes, userName, checkCall: checkMcpCall, openUrl: (u) => openUrl(u),
   allowActions: () => !!config.allowActions, skipAllow: () => !!config.allowActions && !!config.skipAllow,
   keyStore: MAC ? 'Keychain' : LINUX ? 'keyring' : 'Windows key store',
-}));
+});
+tools.push(...mcpTools);
 let requestNo = 0;
 holdAfterLaunch(tools, () => requestNo);
 guardTools(tools, { log: (kind, data) => logLine(kind, data), request: () => requestNo, goals: true });
 const startRequest = () => (requestNo = nextTurn());
+
+// Expose background agent & external connection tools on yomna-desktop MCP as well so CLI harnesses can use them.
+const wrapExtraDesktop = (name) => (args, ctx = {}) => {
+  const t = tools.find((x) => x.name === name);
+  if (!t) throw new Error(`Tool ${name} is not available right now.`);
+  return t.execute(args, { toolCallId: ctx.toolCallId ?? `mcp-${Date.now()}`, ...ctx });
+};
+const extraDesktopHandlers = Object.fromEntries(
+  ['send_agent', 'tell_agent', 'stop_agent', 'answer_agent', 'agent_report', 'add_connection', 'remove_connection', 'connection_tools', 'use_connection']
+    .map((name) => [name, wrapExtraDesktop(name)]),
+);
+let desktopMcp = null;
+const desktopMcpReady = createDesktopMcpBridge({
+  ...desktopHandlers,
+  ...extraDesktopHandlers,
+  onToolCall: ({ name, args }) => logLine('mcp_desktop', { name, args }),
+}).then((bridge) => {
+  desktopMcp = bridge;
+  logLine('mcp_desktop_ready', { socket: bridge.socketPath });
+  return bridge;
+}).catch((e) => {
+  console.error('[mcp-desktop] failed to start:', e.message);
+  return null;
+});
 
 // The step trail: plan_steps names the parts; a part marked "now" ticks off when the other tool calls of that
 // turn succeed, or shows the first error (in plain words) when one fails. No extra round trips for progress.
@@ -653,6 +666,7 @@ const LIVE_VOICE_LINE = () => `- Voice: this is a Live call: ${userName} just ta
 const livePrompt = (context = '', { live = false } = {}) => {
   const facts = pickFacts(context, 40), total = listFacts().length;
   if (!live) lastFactIds = facts.map((f) => f.id);
+  if (facts.length) touchFacts(facts.map((f) => f.id));
   const open = commitmentsText(), done = doneTodayText(), working = agents.liveText(), scheduled = jobsText(fmtWhen), learned = skillIndex(), linked = mcp.liveText();
   const turn = `Live state (current as of this moment):
 ${frontNow ? `${frontNow}\n` : ''}${focusLine()}${crewLine()}${linked ? `- Connections (connection_tools shows a server's tools, use_connection calls one):\n${linked}\n` : ''}- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF (tell the user to turn on "Allow File Edits & Commands" on the General page in ${PANEL} if they want it). Seeing the screen is not affected: take_screenshot and read_window only look, so use them whenever you're asked what's on screen`}.${config.allowActions && config.skipAllow ? ' Allow prompts are skipped: confirmations go ahead automatically, so be extra careful.' : ''}
@@ -887,7 +901,7 @@ async function learnFacts(facts) {
     if (f.replaces) await forgetFact(f.replaces);
     added.push(await addFact(f.text));
   }
-  if (added.length) menu();
+  if (added.length) { menu(); syncSoon(); }
   return added;
 }
 const memoryQueue = oneAtATime();
@@ -1073,10 +1087,17 @@ const stir = desk.stir;
 // Live mode (livecall.mjs): a tap of the talk chord opens a Gemini Live call with this same prompt, the local
 // tools, and delegate_to_harness wired straight to the active background CLI harness.
 const liveDelegations = new Set();
-const liveSystem = () => { const l = livePrompt('', { live: true }); return `${system()}\n\n${l.turn}\n${l.memory}`; };
+let liveBrief = '';
+function takeLiveBrief() {
+  const b = briefNote({ on: !!config.morningBrief, lastDay: config.briefDay, byVoice: true, todoist: !!config.briefTodoist, canRead: HANDS_OK, name: userName });
+  if (b) { config.briefDay = b.day; saveConfig(); logLine('brief', { live: true, todoist: !!config.briefTodoist && HANDS_OK }); }
+  liveBrief = b ? b.note : '';
+}
+const liveSystem = () => { const l = livePrompt('', { live: true }); return `${system()}\n\n${l.turn}\n${l.memory}${liveBrief ? `\n\n(${liveBrief})` : ''}`; };
 const liveCall = createLiveCall({
   makeBrain: async (emit) => {
     const [key] = await voiceKey('gemini').catch(() => [null]);
+    takeLiveBrief();
     return createLiveBrain({
       emit,
       key,
@@ -1136,6 +1157,7 @@ const liveCall = createLiveCall({
   inkStarted: (id, seg) => ink.started(id, seg),
   // A hung-up call gets the memory pass a Classic conversation gets when it ends (logged as memory, why live_<how>).
   onEnd: (messages, why) => {
+    liveBrief = '';
     for (const ac of liveDelegations) ac.abort();
     liveDelegations.clear();
     memoryPass({ id: 'live', messages }, `live_${why}`);
@@ -1643,14 +1665,17 @@ async function focusTick() {
   if (r.end) {
     const drifts = b.drifts;
     stopFocus();
-    if (!busy && !onboarding) enqueue(`(System, not ${userName}: their ${b.minutes}-minute focus block${b.task ? ` on ${b.task}` : ''} just ended, with ${drifts} drift${drifts === 1 ? '' : 's'}. Tell them in one or two sentences, in character, celebrating it. Start with the [happy] tag.)`);
+    const endMsg = `(System, not ${userName}: their ${b.minutes}-minute focus block${b.task ? ` on ${b.task}` : ''} just ended, with ${drifts} drift${drifts === 1 ? '' : 's'}. Tell them in one or two sentences, in character, celebrating it. Start with the [happy] tag.)`;
+    if (!onboarding && !liveCall.news(endMsg) && !busy) enqueue(endMsg);
     return;
   }
   // A nudge waits while a conversation is going on; the next look decides again.
-  if (r.nudge && !busy && !onboarding) {
-    logLine('focus', { nudge: true });
+  if (r.nudge && !onboarding) {
     const left = Math.max(1, Math.round((b.until - Date.now()) / 60_000));
-    enqueue(`(System, not ${userName}: they're in a focus block${b.task ? ` on ${b.task}` : ''} with ${left} min left, but have been on ${r.nudge} for a bit. Nudge them back playfully in one short sentence, in character: teasing, never scolding. Start with the [remind] tag.)`);
+    const nudgeMsg = `(System, not ${userName}: they're in a focus block${b.task ? ` on ${b.task}` : ''} with ${left} min left, but have been on ${r.nudge} for a bit. Nudge them back playfully in one short sentence, in character: teasing, never scolding. Start with the [remind] tag.)`;
+    if (liveCall.news(nudgeMsg)) { logLine('focus', { nudge: true, live: true }); }
+    else if (!busy) { logLine('focus', { nudge: true }); enqueue(nudgeMsg); }
+    else b.nudgedAt = 0;
   } else if (r.nudge) b.nudgedAt = 0;
 }
 // ---------- memory sync (sync.mjs) ----------
@@ -2095,18 +2120,18 @@ async function onMenu(id, via, value) {
     endIntro();
     freshSession('new'); menu();
     say('Fresh start. What are we doing?', 'happy');
-  } else if (id.startsWith('forget:')) { await forgetFact(id.slice(7)); menu(); }
+  } else if (id.startsWith('forget:')) { await forgetFact(id.slice(7)); menu(); syncSoon(); }
   else if (id === 'panel') send({ type: 'panel_show' });
   else if (id === 'quit') send({ type: 'quit' });
   // The panel asks first in its own words, so this one doesn't ask again.
-  else if (id === 'forgetall:yes') { const n = await clearFacts(); menu(); panelNote(`Forgot ${n} thing${n === 1 ? '' : 's'}.`); }
+  else if (id === 'forgetall:yes') { const n = await clearFacts(); menu(); syncSoon(); panelNote(`Forgot ${n} thing${n === 1 ? '' : 's'}.`); }
   else if (id === 'forgetall') {
     const ok = await ask({ placeholder: 'Type FORGET to erase everything I remember' });
-    if (ok?.trim().toUpperCase() === 'FORGET') { const n = await clearFacts(); menu(); say(`Done. I forgot ${n} thing${n === 1 ? '' : 's'} about you.`, 'concerned'); }
+    if (ok?.trim().toUpperCase() === 'FORGET') { const n = await clearFacts(); menu(); syncSoon(); say(`Done. I forgot ${n} thing${n === 1 ? '' : 's'} about you.`, 'concerned'); }
   } else if (id.startsWith('done:') || id.startsWith('drop:')) {
     const done = id.startsWith('done:');
     updateCommitment(id.slice(5), { status: done ? 'done' : 'dropped' }).then((c) => {
-      menu(); showList({ flash: c?.id, seconds: 4 });
+      menu(); syncSoon(); showList({ flash: c?.id, seconds: 4 });
       if (c && done) ui({ kind: 'agent', e: { type: 'emote', action: 'hype' } }), say(c.advanced ? `Done: ${c.text}. See you again ${shortWhen(c.due)}!` : `Done: ${c.text}. That's what I'm talking about!`, 'happy');
       scheduleReminders();
     });
@@ -2681,8 +2706,11 @@ async function remindTick() {
   firedReminders = [...firedReminders.filter((f) => firedAt - f.at < 3600_000), ...due.map((c) => ({ id: c.id, at: firedAt }))].slice(-20);
   menu(); showList({ flash: due[0].id, seconds: 6 });
   const list = due.map((c) => `- ${c.id}: ${c.text}${c.due ? ` (was due ${fmtWhen(c.due)})` : ''}${c.next ? ` [repeating reminder: already moved on to ${fmtWhen(c.next)}, nothing to mark done]` : c.kind === 'reminder' ? ' [plain reminder: already cleared, nothing to mark done]' : ''}${c.repeat && !c.next ? ` [repeats ${repeatLabel(c.repeat)}${c.missed ? '; the last time went by without being done' : ''}]` : ''}`).join('\n');
-  if (activeHarnessReady()) {
-    enqueue(`(System, not ${userName}: these commitments are due now. Nudge ${userName} about them in one or two sentences, in character. Start with the [remind] tag, or [upset] if it's well overdue. If they answer "snooze", "in 10 minutes" or "move it to tomorrow", use snooze_reminder.)\n${list}`, { listenAfter: snoozeListenOn() });
+  const reminderMsg = `(System, not ${userName}: these commitments are due now. Nudge ${userName} about them in one or two sentences, in character. Start with the [remind] tag, or [upset] if it's well overdue. If they answer "snooze", "in 10 minutes" or "move it to tomorrow", use snooze_reminder.)\n${list}`;
+  if (liveCall.news(reminderMsg)) {
+    // Delivered directly into the open Gemini Live call.
+  } else if (activeHarnessReady()) {
+    enqueue(reminderMsg, { listenAfter: snoozeListenOn() });
   } else {
     ui({ kind: 'agent', e: { type: 'emote', action: 'remind' } });
     say(`Reminder: ${due[0].text}`, 'concerned');

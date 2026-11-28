@@ -6,6 +6,7 @@ const L = DEFAULT_DISTRACTIONS;
 assert.equal(distraction({ app: 'Google Chrome', title: 'Lo-fi beats - YouTube', url: 'https://www.youtube.com/watch?v=1' }, L), 'youtube.com');
 assert.equal(distraction({ app: 'Safari', title: 'Watch', url: 'https://m.youtube.com/' }, L), 'youtube.com', 'subdomain');
 assert.equal(distraction({ app: 'Firefox', title: 'Lo-fi beats – YouTube — Mozilla Firefox' }, L), 'YouTube', 'by title when no address');
+assert.equal(distraction({ app: 'zen', title: 'Reddit - Dive into anything — Zen Browser' }, L), 'Reddit', 'Linux Wayland title fallback without URL');
 assert.equal(distraction({ app: 'Arc', title: 'r/gaming', url: 'https://old.reddit.com/r/gaming' }, L), 'reddit.com');
 assert.equal(distraction({ app: 'Steam', title: 'Steam' }, L), 'Steam');
 assert.equal(distraction({ app: 'steamwebhelper', title: 'Library' }, L), 'Steam', 'app name contains it');

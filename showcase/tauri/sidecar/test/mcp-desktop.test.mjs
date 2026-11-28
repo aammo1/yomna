@@ -146,7 +146,10 @@ test('mcp-desktop bridge + stdio relay serves initialize, tools/list, tools/call
     show_list: async () => 'The list is on screen.',
     snooze_reminder: async (args) => `Snoozed ${args.until || 'in 10m'}`,
     schedule_job: async (args) => `Scheduled ${args.title}`,
+    update_job: async (args) => `Updated ${args.id}`,
     list_jobs: async () => 'No scheduled jobs.',
+    send_agent: async (args) => `Started agent ${args.title}`,
+    connection_tools: async (args) => `Tools for ${args.server}`,
     start_focus: async ({ minutes = 25 }) => `Focus started for ${minutes}m`,
     stop_focus: async () => 'Focus stopped.',
   });
@@ -180,12 +183,15 @@ test('mcp-desktop bridge + stdio relay serves initialize, tools/list, tools/call
     assert.deepEqual(ping.result, {});
 
     const listed = await client.request(3, 'tools/list');
-    assert.equal(listed.result.tools.length, 20);
+    assert.equal(listed.result.tools.length, 30);
     const names = listed.result.tools.map((t) => t.name);
     for (const expected of [
       'take_screenshot', 'area_crop', 'draw', 'list_windows', 'read_window', 'act_in_app',
       'remember_commitment', 'update_commitment', 'list_commitments', 'forget_fact',
-      'show_list', 'snooze_reminder', 'schedule_job', 'list_jobs', 'start_focus', 'stop_focus',
+      'show_list', 'snooze_reminder', 'schedule_job', 'update_job', 'list_jobs',
+      'send_agent', 'tell_agent', 'stop_agent', 'answer_agent', 'agent_report',
+      'add_connection', 'remove_connection', 'connection_tools', 'use_connection',
+      'start_focus', 'stop_focus',
       'use_skill', 'save_skill', 'forget_skill', 'install_skill',
     ]) {
       assert.ok(names.includes(expected), `missing tool ${expected}`);

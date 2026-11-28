@@ -6,8 +6,8 @@ export const NUDGE_GAP_MS = 3 * 60_000; // at most one nudge this often
 export const MIN_MINUTES = 5, MAX_MINUTES = 240;
 
 // Sites by address; apps and pages by name (in the app's name or the window title).
-export const DEFAULT_DISTRACTIONS = ['youtube.com', 'YouTube', 'reddit.com', 'x.com', 'twitter.com', 'tiktok.com', 'instagram.com',
-  'facebook.com', 'netflix.com', 'Netflix', 'twitch.tv', 'Twitch', 'Steam', 'Epic Games', 'Roblox', 'Minecraft', 'League of Legends',
+export const DEFAULT_DISTRACTIONS = ['youtube.com', 'YouTube', 'reddit.com', 'Reddit', 'x.com', 'twitter.com', 'tiktok.com', 'TikTok', 'instagram.com', 'Instagram',
+  'facebook.com', 'Facebook', 'netflix.com', 'Netflix', 'twitch.tv', 'Twitch', 'Steam', 'Epic Games', 'Roblox', 'Minecraft', 'League of Legends',
   'Fortnite', 'Valorant', 'Counter-Strike', 'Battle.net', 'disneyplus.com', 'primevideo.com', '9gag.com'];
 
 /** A list typed by the user ("youtube.com, Steam, chess.com") → clean entries; empty → the defaults. */

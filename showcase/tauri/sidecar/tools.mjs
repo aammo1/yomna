@@ -597,7 +597,7 @@ export function oneYesNoAtATime(ask) {
   };
 }
 
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, focus = null, firedReminders = () => [], showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Yomna isn\'t running.' }), workdir = HOME, fileDir = () => '', readOnly = () => [], own = null, sideSearch = async () => null, pointScale = () => 'pixels', skipAllow = () => false, rememberAllow = true, jobs = null, skills = null }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, onFacts = () => {}, focus = null, firedReminders = () => [], showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Yomna isn\'t running.' }), workdir = HOME, fileDir = () => '', readOnly = () => [], own = null, sideSearch = async () => null, pointScale = () => 'pixels', skipAllow = () => false, rememberAllow = true, jobs = null, skills = null }) {
   // Relative paths (and run_command) start in workdir: ~/Yomna for the chat, its own folder for an agent.
   // fileDir: where the file tools' relative paths and run_command start instead, when set (the chat's second brain,
   // secondbrain.mjs), so `grep x _context/…` finds the same notes read_file does. Its read-only folders still hold.
@@ -1500,7 +1500,7 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
     {
       name: 'forget_fact', description: 'Delete a saved fact that is wrong or that the user asks you to forget. Ids are in the memory section of the <live-state> block.',
       parameters: z.object({ id: z.string() }),
-      execute: async ({ id }) => { const f = await forgetFact(id); if (!f) throw new Error(`No fact with id ${id}.`); return `Forgot: ${f.text}`; },
+      execute: async ({ id }) => { const f = await forgetFact(id); if (!f) throw new Error(`No fact with id ${id}.`); onFacts(f); return `Forgot: ${f.text}`; },
     },
     {
       // The step trail on screen. Free to call: always alongside other tool calls, never in a turn of its own.
@@ -1695,7 +1695,7 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
     forget_fact: wrapTool('forget_fact'),
     show_list: wrapTool('show_list'),
     snooze_reminder: wrapTool('snooze_reminder'),
-    ...(jobs ? { schedule_job: wrapTool('schedule_job'), list_jobs: wrapTool('list_jobs') } : {}),
+    ...(jobs ? { schedule_job: wrapTool('schedule_job'), update_job: wrapTool('update_job'), list_jobs: wrapTool('list_jobs') } : {}),
     ...(skills ? { use_skill: wrapTool('use_skill'), save_skill: wrapTool('save_skill'), forget_skill: wrapTool('forget_skill'), install_skill: wrapTool('install_skill') } : {}),
     ...(focus ? { start_focus: wrapTool('start_focus'), stop_focus: wrapTool('stop_focus') } : {}),
   };

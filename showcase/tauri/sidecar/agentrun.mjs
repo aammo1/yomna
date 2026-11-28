@@ -4,6 +4,8 @@
 // in:  {t:'start', agent, model, content} {t:'reply', id, value} {t:'steer', text} {t:'allow', on, skip?}
 // out: {t:'beat'} {t:'tick'} {t:'tool', name} {t:'ui', m} (an operator's {kind:'hands'} overlay message) {t:'turn', usage} {t:'plan', text} {t:'ask', id, question} {t:'ask_cancel', id}
 //      {t:'creds', id} {t:'finish', result} {t:'end', ok, error?}
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { agentEvents } from './agentstream.mjs';
@@ -50,8 +52,8 @@ function end(ok, error) {
   harnessMgr?.dispose?.();
   send({ t: 'end', ok, ...(error ? { error } : {}) }, () => process.exit(0));
 }
-const beat = setInterval(() => send({ t: 'beat' }), 15_000);
-send({ t: 'beat' });
+const beat = process.connected ? setInterval(() => send({ t: 'beat' }), 15_000) : null;
+if (process.connected) send({ t: 'beat' });
 
 // Old tool results shrink once the run outgrows its budget; the brief and the latest turns stay whole.
 const sizeOf = (c) => (typeof c === 'string' ? c.length : Array.isArray(c) ? c.reduce((n, p) => n + (p?.type === 'image' ? 6000 : String(p?.text ?? p?.content ?? '').length + JSON.stringify(p?.args ?? '').length), 0) : 0);
@@ -61,6 +63,41 @@ export function trimRun(msgs, budgetChars) {
   const keep = msgs.length - 12;
   const short = (c) => { const t = typeof c === 'string' ? c : (Array.isArray(c) ? c.map((p) => p?.text ?? '').join('') : ''); return t.length > 300 ? `${t.slice(0, 300)}\n…(trimmed to save space; read it again if you need it)` : t; };
   return msgs.map((m, i) => (m.role === 'tool' && i > 1 && i < keep ? { ...m, content: m.content.map((r) => ({ ...r, content: short(r.content) })) } : m));
+}
+
+/** Collect finished files created under `<dir>/files` (relative paths, capped at 20). */
+export async function collectFiles(dir) {
+  const root = path.join(dir, 'files');
+  const out = [];
+  const walk = async (rel) => {
+    for (const e of await fs.readdir(path.join(root, rel), { withFileTypes: true }).catch(() => [])) {
+      if (out.length >= 20) return;
+      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(r);
+      else out.push({ path: `files/${r}`, what: '' });
+    }
+  };
+  await walk('');
+  return out;
+}
+
+/** One plain-text outcome sentence (<= 88 chars) without splitting on filename dots or keeping markdown syntax. */
+export function cleanOutcome(reply, files = []) {
+  const plain = String(reply ?? '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[\s#>*\-]+/gm, '')
+    .replace(/[*_`]+/g, '')
+    .trim();
+  const firstLine = plain.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+  const sentence = firstLine.split(/(?<=[.!?])\s+/)[0]?.trim() || '';
+  if (sentence) return sentence.length > 88 ? `${sentence.slice(0, 87).trimEnd()}…` : sentence;
+  if (files.length) {
+    const names = files.slice(0, 3).map((f) => path.basename(f.path)).join(', ');
+    const line = `Created ${names}${files.length > 3 ? ` (+${files.length - 3} more)` : ''}.`;
+    return line.length > 88 ? `${line.slice(0, 87).trimEnd()}…` : line;
+  }
+  return 'Completed background task.';
 }
 
 async function run({ agent: a, model: md, content }) {
@@ -161,9 +198,18 @@ async function run({ agent: a, model: md, content }) {
       const next = await runTurn(queued.splice(0).join('\n'));
       if (next) finalReply = next;
     }
-    if (!result && finalReply) {
-      const outcome = finalReply.split(/[\n.!?]/)[0].trim().slice(0, 88) || 'Completed background task.';
-      const checked = checkFinish({ outcome, ...(a.returns === 'answer' ? { report: finalReply.slice(0, 1180) } : {}) }, { dir: a.dir, deliverTo: a.deliverTo, returns: a.returns });
+    const createdFiles = await collectFiles(a.dir);
+    if (!result && (finalReply || createdFiles.length)) {
+      const outcome = cleanOutcome(finalReply, createdFiles);
+      const reportText = (finalReply || outcome).slice(0, 1180);
+      const checked = checkFinish(
+        {
+          outcome,
+          ...(a.returns === 'answer' || finalReply ? { report: reportText } : {}),
+          ...(createdFiles.length ? { files: createdFiles } : {}),
+        },
+        { dir: a.dir, deliverTo: a.deliverTo, returns: a.returns },
+      );
       if (!checked.error) {
         result = checked.result;
         send({ t: 'finish', result });
