@@ -159,6 +159,8 @@ export function createLiveCall({ makeBrain, ui, send, ask, toClassic, anim = () 
         ui({ kind: 'agent', e: { type: 'tool', id: e.id, anim: anim(e.name) } });
         return;
       case 'toolEnd':
+        // Rejected before it ran (arguments in a shape the tool doesn't take): the tool's own guard never saw it.
+        if (e.badArgs) log('tool_outcome', { id: e.id, name: e.name, ok: false, reason: 'bad_args' });
         messages.push({ role: 'tool', content: [{ content: String(e.output ?? ''), isError: !e.ok }] });
         // Cancelled or failed: what it held never draws (a cancelled drawing is taken off the overlay).
         if (held.has(e.id)) { if (e.ok) { held.get(e.id).answered = true; holdTimer(e.id); } else { clearTimeout(held.get(e.id).timer); held.delete(e.id); } }

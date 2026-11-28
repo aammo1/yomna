@@ -159,6 +159,19 @@ if (process.platform === 'darwin') {
   assert.deepEqual(hyprCmd.close('0x2'), ['hl.dsp.window.close({ window = "address:0x2" })', ['closewindow', 'address:0x2']]);
   assert.equal(hyprCmd.move('0x2', '3')[0], 'hl.dsp.window.move({ workspace = "3", follow = false, window = "address:0x2" })');
   assert.equal(hyprCmd.workspace('") os.exit() --')[0], 'hl.dsp.focus({ workspace = "\\") os.exit() --" })', 'a value never breaks out of its Lua string');
+  // act_in_app calls in the shapes Gemini Live sent (log of 2026-11-28), repaired into steps.
+  const { normalizeActArgs: fixAct } = await import('../tools.mjs');
+  assert.deepEqual(fixAct({ app: 'Omacalc', do: ['click_text', '7'], steps: [] }), { target: 'Omacalc', steps: [{ do: 'click_text', text: '7' }] });
+  assert.deepEqual(fixAct({ do: ["key: 'escape'"], app: 'Zen Browser', steps: [] }), { target: 'Zen Browser', steps: [{ do: 'key', key: 'escape' }] });
+  assert.deepEqual(fixAct({ do: [{ do: 'click_text', text: 'Decline' }], app: 'Files', steps: [] }).steps, [{ do: 'click_text', text: 'Decline' }]);
+  assert.deepEqual(fixAct({ app: 'browser', do: ['click_text', 'Create images', 'key', 'return'] }).steps, [{ do: 'click_text', text: 'Create images' }, { do: 'key', key: 'return' }]);
+  assert.deepEqual(fixAct({ target: 'front', do: 'click_text', text: 'Save' }).steps, [{ do: 'click_text', text: 'Save' }]);
+  assert.deepEqual(fixAct({ steps: ['click_text: Sign in', 'wait(2)'] }).steps, [{ do: 'click_text', text: 'Sign in' }, { do: 'wait', seconds: 2 }]);
+  assert.deepEqual(fixAct({ app: 'browser', do: ['open'], steps: [] }).steps, [], 'an unknown verb is dropped, not guessed');
+  // Steps written as code inside strings (log of 2026-11-28 03:37).
+  assert.deepEqual(fixAct({ app: 'Omacalc', steps: ["{do: 'click_text', text: '7'}", "{do: 'click_text', text: '+'}"] }).steps, [{ do: 'click_text', text: '7' }, { do: 'click_text', text: '+' }]);
+  assert.deepEqual(fixAct({ app: 'x', steps: ['{"do":"key","key":"return"}'] }).steps, [{ do: 'key', key: 'return' }]);
+  assert.deepEqual(fixAct({ app: 'x', steps: '[{"do":"type","text":"hi"}]' }).steps, [{ do: 'type', text: 'hi' }], 'the whole list as a string');
   console.log('linux app tests: passed');
 }
 

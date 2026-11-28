@@ -1,7 +1,7 @@
 //! Input automation (`act`) with strict `HANDS_OFF` protection,
 //! Wayland (`wtype` / `ydotool` / `hyprctl`) and X11 (`xdotool`) execution.
 
-use crate::atspi::{find_text_matches, read_window_ui, UiControl};
+use crate::atspi::{find_text_matches, press, read_window_ui, UiControl};
 use crate::hyprland::{
     focus_window, front_window, is_hyprland, is_wayland, no_window, resolve, win_info, window_at, Win,
 };
@@ -706,7 +706,9 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                     verify_spot_safe(gx, gy)?;
                     ensure_focus()?;
                     progress(json!({ "ev": "step", "i": i, "do": what, "label": c.label, "bounds": c.bounds.to_arr() }));
-                    do_click(gx, gy, ClickKind::Left)?;
+                    if what == "focus" || !press(c) {
+                        do_click(gx, gy, ClickKind::Left)?;
+                    }
                     done.push(format!("{what} {}", if c.label.is_empty() { format!("control {}", c.id) } else { c.label.clone() }));
                 }
                 "click_text" => {
@@ -741,7 +743,11 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                     verify_spot_safe(gx, gy)?;
                     ensure_focus()?;
                     progress(json!({ "ev": "step", "i": i, "do": "click_text", "label": text, "bounds": [x, y, bw, bh] }));
-                    do_click(gx, gy, ClickKind::Left)?;
+                    let id = m["id"].as_u64().unwrap_or(0) as usize;
+                    let pressed = ui.controls.iter().find(|c| c.id == id && (c.label == text || c.value == text)).is_some_and(press);
+                    if !pressed {
+                        do_click(gx, gy, ClickKind::Left)?;
+                    }
                     done.push(format!("clicked \"{text}\""));
                 }
                 "type" => {

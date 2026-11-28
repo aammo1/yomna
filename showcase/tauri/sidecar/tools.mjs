@@ -163,6 +163,72 @@ function editDistance(a, b) {
   return prev[b.length];
 }
 
+// ---------- act_in_app calls in the wrong shape ----------
+const ACT_VERBS = ['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait'];
+// The field a verb's one value goes in ("click_text: Save" → { do: 'click_text', text: 'Save' }).
+const VERB_FIELD = { click_text: 'text', type: 'text', key: 'key', scroll: 'direction', wait: 'seconds', click: 'id', focus: 'field', fill: 'field', choose: 'field', set: 'field' };
+const unquote = (s) => String(s).trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+/** A step written as code inside a string: "{do: 'click_text', text: '7'}" or '{"do":"key","key":"return"}'. */
+function looseObject(str) {
+  const t = String(str).trim();
+  if (!/^\{[\s\S]*\}$/.test(t)) return null;
+  try { return JSON.parse(t); } catch {}
+  // Single-quoted strings → double-quoted (escaping inner double quotes), bare keys → quoted keys.
+  const json = t
+    .replace(/'((?:[^'\\]|\\.)*)'/g, (_, s) => JSON.stringify(s.replace(/\\'/g, "'")))
+    .replace(/([{,]\s*)([A-Za-z_][\w]*)\s*:/g, '$1"$2":')
+    .replace(/,\s*}/g, '}');
+  try { return JSON.parse(json); } catch { return null; }
+}
+function stepFrom(verb, value) {
+  const v = String(verb).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const d = v === 'press' || v === 'press_key' ? 'key' : v === 'click_on' || v === 'tap' ? 'click_text' : v;
+  if (!ACT_VERBS.includes(d)) return null;
+  const f = VERB_FIELD[d];
+  if (value == null || value === '') return d === 'scroll' ? { do: d, direction: 'down' } : { do: d };
+  const val = f === 'seconds' || f === 'id' ? Number(value) : f === 'direction' ? String(value).toLowerCase() : unquote(value);
+  return f && !(typeof val === 'number' && Number.isNaN(val)) ? { do: d, [f]: val } : { do: d };
+}
+/** Turns what voice models send ({ app, do: ['click_text', '7'], steps: [] }, do: ["key: 'escape'"], do: [{…}],
+ *  a single step at the top level) into { target, steps: [{ do, … }] }. Unknown verbs are dropped. */
+export function normalizeActArgs(raw) {
+  const a = raw && typeof raw === 'object' ? { ...raw } : {};
+  const target = a.target ?? a.app ?? a.window ?? a.application;
+  const decode = (v) => (Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? looseObject(x) ?? x : x)) : typeof v === 'string' ? looseObject(v) ?? v : v);
+  if (a.steps != null) a.steps = typeof a.steps === 'string' && /^\s*\[/.test(a.steps) ? (() => { try { return JSON.parse(a.steps); } catch { return a.steps; } })() : decode(a.steps);
+  if (a.do != null) a.do = decode(a.do);
+  let steps = Array.isArray(a.steps) && a.steps.length ? a.steps : null;
+  const src = steps ?? a.do ?? a.actions ?? a.action ?? a.step ?? null;
+  const out = [];
+  const list = Array.isArray(src) ? src : src == null ? [] : [src];
+  // A top-level single step: { do: 'click_text', text: 'Save' }.
+  if (!steps && typeof a.do === 'string') {
+    const s = stepFrom(a.do, null);
+    if (s) { for (const k of ['text', 'field', 'option', 'near', 'key', 'direction', 'amount', 'to_end', 'x', 'y', 'seconds', 'id']) if (a[k] != null) s[k] = a[k]; out.push(s); }
+  } else {
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i];
+      if (it && typeof it === 'object') {
+        const s = typeof it.do === 'string' ? stepFrom(it.do, null) : null;
+        if (s) out.push({ ...it, do: s.do });
+        continue;
+      }
+      const str = String(it ?? '').trim();
+      const m = str.match(/^([a-z_ -]+?)\s*[:=(]\s*(.*?)\)?$/i);
+      if (m && stepFrom(m[1], null)) { const s = stepFrom(m[1], m[2]); if (s) out.push(s); continue; }
+      // ['click_text', '7']: a verb, then its value (when the next item isn't a verb itself).
+      const s = stepFrom(str, null);
+      if (s) {
+        const next = list[i + 1];
+        if (next != null && typeof next !== 'object' && !stepFrom(String(next), null)) { out.push(stepFrom(str, next)); i++; }
+        else out.push(s);
+      }
+    }
+  }
+  steps = out.filter(Boolean);
+  return { ...(target ? { target: String(target) } : {}), steps };
+}
+
 // ---------- Hyprland windows ----------
 /** The open windows: [{ address, class, initialClass, title, workspace, focused }]; [] off Hyprland or on error. */
 export async function hyprClients() {
@@ -1111,6 +1177,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
           })).min(1).max(40),
         }),
         executionMode: 'sequential',
+        normalize: normalizeActArgs,
+        example: `{"target": "Calculator", "steps": [{"do": "click_text", "text": "7"}, {"do": "type", "text": "hello"}, {"do": "key", "key": "return"}]}`,
         execute: async ({ target = 'front', steps: given }, ctx) => {
           const asked = String(target || 'front');
           const steps = given.filter((s) => !['read_window', 'take_screenshot', 'screenshot'].includes(s.do));

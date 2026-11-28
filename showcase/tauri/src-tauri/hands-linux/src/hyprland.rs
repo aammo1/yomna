@@ -561,8 +561,55 @@ pub fn resolve(target: &str) -> Option<Win> {
         .or_else(|| all.into_iter().find(|w| app_matches(&w.app, &w.class, &w.exe, t)))
 }
 
+/// The window a click at (x, y) lands in. On Hyprland: only windows on a workspace that's showing (a window on another
+/// workspace is under every point too), the front one first; Yomna's see-through overlay is skipped, since it covers
+/// the whole screen and clicks pass through it to the app below (its panel and other windows still count).
 pub fn window_at(x: i32, y: i32) -> Option<Win> {
+    if is_hyprland() {
+        let (mons, active) = hypr_monitors();
+        let mut hits: Vec<Win> = all_windows_raw()
+            .into_iter()
+            .filter(|w| w.bounds.contains(x, y))
+            .filter(|w| active.is_empty() || active.contains(&w.workspace))
+            .filter(|w| !is_yomna_overlay(w, &mons))
+            .collect();
+        hits.sort_by_key(|w| !w.focused);
+        return hits.into_iter().next();
+    }
     all_windows_raw().into_iter().find(|w| w.bounds.contains(x, y))
+}
+
+/// Yomna's full-monitor transparent overlay (main.rs builds it one pixel short of the monitor).
+pub fn is_yomna_overlay(w: &Win, monitors: &[Rect]) -> bool {
+    is_yomna(&w.app, &w.class, &w.exe, w.pid)
+        && monitors.iter().any(|m| (w.bounds.w - m.w).abs() <= 2 && (w.bounds.h - m.h).abs() <= 2)
+}
+
+/// Each monitor's logical rect, and the ids of the workspaces showing (active and special ones).
+fn hypr_monitors() -> (Vec<Rect>, Vec<i64>) {
+    let (mut rects, mut active) = (Vec::new(), Vec::new());
+    if let Ok(raw) = run_hyprctl(&["monitors", "-j"]) {
+        if let Ok(mons) = serde_json::from_str::<Vec<Value>>(&raw) {
+            for m in &mons {
+                let num = |k: &str| m.get(k).and_then(Value::as_i64).unwrap_or(0);
+                let scale = m.get("scale").and_then(Value::as_f64).unwrap_or(1.0).max(0.5);
+                rects.push(Rect::new(
+                    num("x") as i32,
+                    num("y") as i32,
+                    (num("width") as f64 / scale).round() as i32,
+                    (num("height") as f64 / scale).round() as i32,
+                ));
+                for k in ["activeWorkspace", "specialWorkspace"] {
+                    if let Some(id) = m.get(k).and_then(|w| w.get("id")).and_then(Value::as_i64) {
+                        if id != 0 {
+                            active.push(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (rects, active)
 }
 
 pub fn focus_window(w: &Win) -> Result<(), String> {
@@ -659,6 +706,15 @@ pub fn no_window(target: &str) -> String {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn only_yomnas_full_monitor_overlay_is_see_through() {
+        let mons = [Rect::new(0, 0, 1536, 864)];
+        let win = |class: &str, title: &str, b: Rect| Win { app: class.into(), class: class.into(), title: title.into(), bounds: b, ..Default::default() };
+        assert!(is_yomna_overlay(&win("yomna", "Yomna", Rect::new(0, 0, 1536, 863)), &mons), "the overlay, a pixel short");
+        assert!(!is_yomna_overlay(&win("yomna", "Yomna", Rect::new(400, 200, 640, 480)), &mons), "the panel still blocks clicks");
+        assert!(!is_yomna_overlay(&win("zen", "Zen Browser", Rect::new(0, 0, 1536, 864)), &mons), "a full-screen app is not Yomna");
+    }
 
     pub const SAMPLE_ACTIVE: &str = r#"{
         "address": "0x55c8ff01a540",

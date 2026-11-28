@@ -70,9 +70,15 @@ export function liveDeclarations(tools = [], slow = LIVE_SLOW_TOOLS) {
 
 const stripNulls = (v) => (Array.isArray(v) ? v.map(stripNulls)
   : v !== null && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null).map(([k, x]) => [k, stripNulls(x)])) : v);
+// A tool may also repair the shapes voice models get wrong (tool.normalize): tried last, so right calls are untouched.
 const parse = (tool, args) => {
   try { return tool.parameters.parse(args); } catch (first) {
-    try { return tool.parameters.parse(stripNulls(args)); } catch { throw first; }
+    try { return tool.parameters.parse(stripNulls(args)); } catch {
+      if (typeof tool.normalize !== 'function') throw first;
+      try { return tool.parameters.parse(tool.normalize(stripNulls(args))); } catch {
+        throw new Error(tool.example ? `These arguments don't fit ${tool.name}. Send them as real JSON in this shape, not text: ${tool.example}` : first.message);
+      }
+    }
   }
 };
 
@@ -138,7 +144,7 @@ export function createLiveBrain({ emit, tools = [], system, slow = LIVE_SLOW_TOO
   }
   async function answer(group) {
     const done = (await Promise.all(group.map(run))).filter(Boolean);
-    for (const { id, name, ok, response } of done) emit({ type: 'toolEnd', id, name, ok, output: response.output ?? response.error });
+    for (const { id, name, ok, response, badArgs } of done) emit({ type: 'toolEnd', id, name, ok, output: response.output ?? response.error, ...(badArgs ? { badArgs: true } : {}) });
     if (done.length) live.respond(done.map(({ id, name, response }) => ({ id, name, response })));
     flush();
   }
@@ -165,12 +171,13 @@ export function createLiveBrain({ emit, tools = [], system, slow = LIVE_SLOW_TOO
     emit({ type: 'tool', id, name, args });
     const cancelled = new Promise((res) => ac.signal.addEventListener('abort', () => res(null), { once: true }));
     const work = (async () => {
-      let response, ok = false;
+      let response, ok = false, badArgs = false;
       try {
         const list = resolvedTools();
         const tool = list.find((t) => t.name === name);
         if (!tool) throw new Error(unknownToolMessage(name, list.map((t) => t.name)));
-        const parsed = parse(tool, args);
+        let parsed;
+        try { parsed = parse(tool, args); } catch (e) { badArgs = true; throw e; }
         const raw = name === DELEGATE_TOOL_NAME && !tool.execute
           ? await runDelegate(parsed, { signal: ac.signal, toolCallId: id })
           : await tool.execute(parsed, { signal: ac.signal, toolCallId: id });
@@ -185,7 +192,7 @@ export function createLiveBrain({ emit, tools = [], system, slow = LIVE_SLOW_TOO
       }
       running.delete(id);
       if (ac.signal.aborted) flush();
-      return ac.signal.aborted ? null : { id, name, ok, response };
+      return ac.signal.aborted ? null : { id, name, ok, response, badArgs };
     })();
     const r = await Promise.race([work, cancelled]);
     if (!r) emit({ type: 'toolEnd', id, name, ok: false });

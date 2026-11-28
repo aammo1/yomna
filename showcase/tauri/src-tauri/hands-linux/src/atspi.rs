@@ -21,6 +21,10 @@ pub struct UiControl {
     pub focused: bool,
     pub offscreen: bool,
     pub bounds: Rect,
+    /// Where it lives on the accessibility bus (bus name, object path), to press it without the mouse.
+    pub node: Option<(String, String)>,
+    /// It has the Action interface (buttons, links, menu items, checkboxes).
+    pub actionable: bool,
 }
 
 impl UiControl {
@@ -86,6 +90,45 @@ fn map_role(role_name: &str) -> Option<&'static str> {
     })
 }
 
+/// A string property read with Properties.Get: zbus's property cache is filled by GetAll, which AT-SPI apps don't
+/// answer reliably, so cached reads came back empty (every button had no label).
+async fn prop_str(conn: &zbus::Connection, bus: &str, path: &str, name: &str) -> String {
+    let Ok(props) = Proxy::new(conn, bus, path, "org.freedesktop.DBus.Properties").await else {
+        return String::new();
+    };
+    match props.call::<_, _, zbus::OwnedVariant>("Get", &("org.a11y.atspi.Accessible", name)).await {
+        Ok(v) => String::try_from(v).unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Presses a control through accessibility (its click/press/activate action), the way a screen reader does: no mouse,
+/// so nothing on top of it (Yomna's overlay, a popup, another window) can take the click, and it works on any
+/// workspace. false when it has no such action or the app refused; the caller then clicks with the mouse.
+pub fn press(c: &UiControl) -> bool {
+    let Some((bus, path)) = c.node.clone() else { return false };
+    if !c.actionable {
+        return false;
+    }
+    zbus::block_on(async move {
+        let Ok(session) = Connection::session().await else { return false };
+        let Ok(a11y) = Proxy::new(&session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus").await else { return false };
+        let Ok(addr) = a11y.call::<_, _, String>("GetAddress", &()).await else { return false };
+        let Ok(conn) = zbus::connection::Builder::address(addr.as_str()).build().await else { return false };
+        let Ok(act) = Proxy::new(&conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Action").await else { return false };
+        // (name, description, key binding) per action: pick the one that clicks, else the first.
+        let actions: Vec<(String, String, String)> = act.call("GetActions", &()).await.unwrap_or_default();
+        if actions.is_empty() {
+            return false;
+        }
+        let pick = actions
+            .iter()
+            .position(|(n, _, _)| matches!(n.to_ascii_lowercase().as_str(), "click" | "press" | "activate" | "jump" | "toggle"))
+            .unwrap_or(0) as i32;
+        act.call::<_, _, bool>("DoAction", &(pick,)).await.unwrap_or(false)
+    })
+}
+
 pub fn read_window_ui(win: &Win) -> UiTree {
     zbus::block_on(read_window_ui_async(win)).unwrap_or_else(|_| UiTree::unavailable())
 }
@@ -96,6 +139,14 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
         .await
         .map_err(|e| e.to_string())?;
     let addr: String = a11y_bus.call("GetAddress", &()).await.map_err(|e| e.to_string())?;
+    // Accessibility is off by default on Hyprland/Omarchy (nothing like a screen reader turns it on), and with it off
+    // apps register empty or not at all, so read_window found no controls anywhere. Turning it on is what a screen
+    // reader does; apps started from now on (and Qt/GTK ones already open) fill in their controls.
+    if let Ok(status) = Proxy::new(&session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status").await {
+        if !status.get_property::<bool>("IsEnabled").await.unwrap_or(false) {
+            let _ = status.set_property("IsEnabled", true).await;
+        }
+    }
     if addr.trim().is_empty() {
         return Ok(UiTree::unavailable());
     }
@@ -118,8 +169,10 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
     .map_err(|e| e.to_string())?;
 
     let apps: Vec<(String, OwnedObjectPath)> = root.call("GetChildren", &()).await.map_err(|e| e.to_string())?;
-    let mut target_app: Option<(String, String)> = None;
-
+    // Every registration that fits: by process id first, then by name. One app can register more than once under the
+    // same pid (Qt/GTK apps often leave an empty one first), so each is read until one has something in it.
+    let mut by_pid: Vec<(String, String)> = Vec::new();
+    let mut by_name: Vec<(String, String)> = Vec::new();
     for (bus_name, path) in apps {
         if bus_name.is_empty() {
             continue;
@@ -127,29 +180,29 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
         if win.pid != 0 {
             if let Ok(pid) = dbus.call::<_, _, u32>("GetConnectionUnixProcessID", &(bus_name.as_str(),)).await {
                 if pid == win.pid {
-                    target_app = Some((bus_name, path.to_string()));
-                    break;
+                    by_pid.push((bus_name, path.to_string()));
+                    continue;
                 }
             }
         }
-        if target_app.is_none() {
-            if let Ok(p) = Proxy::new(&conn, bus_name.as_str(), path.as_str(), "org.a11y.atspi.Accessible").await {
-                if let Ok(name) = p.get_property::<String>("Name").await {
-                    let nl = name.to_ascii_lowercase();
-                    let al = win.app.to_ascii_lowercase();
-                    let cl = win.class.to_ascii_lowercase();
-                    if !nl.is_empty() && (nl == al || nl == cl || al.contains(&nl) || nl.contains(&al)) {
-                        target_app = Some((bus_name, path.to_string()));
-                    }
-                }
-            }
+        let nl = prop_str(&conn, bus_name.as_str(), path.as_str(), "Name").await.to_ascii_lowercase();
+        let al = win.app.to_ascii_lowercase();
+        let cl = win.class.to_ascii_lowercase();
+        if !nl.is_empty() && (nl == al || nl == cl || al.contains(&nl) || nl.contains(&al)) {
+            by_name.push((bus_name, path.to_string()));
         }
     }
 
-    let Some((app_bus, app_path)) = target_app else {
-        return Ok(UiTree::unavailable());
-    };
+    for (app_bus, app_path) in by_pid.into_iter().chain(by_name) {
+        let tree = walk_app(&conn, win, app_bus, app_path).await;
+        if !tree.controls.is_empty() || !tree.texts.is_empty() {
+            return Ok(tree);
+        }
+    }
+    Ok(UiTree::unavailable())
+}
 
+async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path: String) -> UiTree {
     let deadline = Instant::now() + Duration::from_millis(1200);
     let mut tree = UiTree {
         controls: Vec::new(),
@@ -164,12 +217,12 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
             break;
         }
         visited += 1;
-        let Ok(acc) = Proxy::new(&conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Accessible").await else {
+        let Ok(acc) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Accessible").await else {
             continue;
         };
         let role_name: String = acc.call("GetRoleName", &()).await.unwrap_or_default();
-        let name: String = acc.get_property("Name").await.unwrap_or_default();
-        let desc: String = acc.get_property("Description").await.unwrap_or_default();
+        let name: String = prop_str(conn, bus.as_str(), path.as_str(), "Name").await;
+        let desc: String = prop_str(conn, bus.as_str(), path.as_str(), "Description").await;
         let states: Vec<u32> = acc.call("GetState", &()).await.unwrap_or_default();
         let ifaces: Vec<String> = acc.call("GetInterfaces", &()).await.unwrap_or_default();
 
@@ -178,16 +231,18 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
 
         let mut bounds = Rect::default();
         if ifaces.iter().any(|i| i == "org.a11y.atspi.Component") {
-            if let Ok(comp) = Proxy::new(&conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Component").await {
-                if let Ok((x, y, w, h)) = comp.call::<_, _, (i32, i32, i32, i32)>("GetExtents", &(0u32,)).await {
-                    bounds = Rect::new(x, y, w, h);
+            if let Ok(comp) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Component").await {
+                // Window-relative (coord type 1), placed by the window's own position: on Wayland an app can't know
+                // where it is on screen, so its "screen" coordinates are really window ones.
+                if let Ok((x, y, w, h)) = comp.call::<_, _, (i32, i32, i32, i32)>("GetExtents", &(1u32,)).await {
+                    bounds = Rect::new(x + win.bounds.x, y + win.bounds.y, w, h);
                 }
             }
         }
 
         let mut value = String::new();
         if ifaces.iter().any(|i| i == "org.a11y.atspi.Text") {
-            if let Ok(txt) = Proxy::new(&conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Text").await {
+            if let Ok(txt) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Text").await {
                 if let Ok(t) = txt.call::<_, _, String>("GetText", &(0i32, -1i32)).await {
                     value = t.trim().chars().take(160).collect();
                 }
@@ -215,6 +270,8 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
                     focused,
                     offscreen,
                     bounds,
+                    node: Some((bus.clone(), path.clone())),
+                    actionable: ifaces.iter().any(|i| i == "org.a11y.atspi.Action"),
                 });
             }
         } else if showing && !label.is_empty() && tree.texts.len() < 120 {
@@ -234,10 +291,24 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
         }
     }
 
-    if tree.controls.is_empty() && tree.texts.is_empty() {
-        return Ok(UiTree::unavailable());
+    tree
+}
+
+/// Other names a key goes by: the screen shows "+", accessibility names it "Add" (calculators, keypads, toolbars).
+pub fn key_aliases(q: &str) -> &'static [&'static str] {
+    match q {
+        "+" | "plus" | "add" => &["+", "plus", "add"],
+        "-" | "−" | "minus" | "subtract" => &["-", "−", "minus", "subtract"],
+        "×" | "*" | "x" | "times" | "multiply" => &["×", "*", "times", "multiply"],
+        "÷" | "/" | "divide" | "divided by" => &["÷", "/", "divide"],
+        "=" | "equals" | "equal" => &["=", "equals", "equal"],
+        "%" | "percent" => &["%", "percent"],
+        "." | "point" | "decimal" => &[".", "point", "decimal", "decimal point"],
+        "ac" | "all clear" | "clear" | "c" => &["ac", "all clear", "clear"],
+        "±" | "+/-" | "toggle sign" => &["±", "+/-", "toggle sign"],
+        "⌫" | "backspace" | "delete" | "del" => &["⌫", "backspace", "delete"],
+        _ => &[],
     }
-    Ok(tree)
 }
 
 pub fn find_text_matches(win: &Win, query: &str) -> Vec<Value> {
@@ -245,15 +316,17 @@ pub fn find_text_matches(win: &Win, query: &str) -> Vec<Value> {
     if q.is_empty() {
         return Vec::new();
     }
+    let alts = key_aliases(q.as_str());
     let tree = read_window_ui(win);
     let mut matches = Vec::new();
     for c in tree.controls {
         let text = if !c.label.is_empty() { &c.label } else { &c.value };
         let tl = text.trim().to_ascii_lowercase();
-        if tl.is_empty() || !tl.contains(&q) {
+        let alias = alts.iter().any(|a| tl == *a);
+        if tl.is_empty() || (!alias && !tl.contains(&q)) {
             continue;
         }
-        let kind = if tl == q { "exact" } else { "contains" };
+        let kind = if tl == q || alias { "exact" } else { "contains" };
         matches.push(json!({
             "text": text,
             "match": kind,
@@ -265,5 +338,21 @@ pub fn find_text_matches(win: &Win, query: &str) -> Vec<Value> {
             break;
         }
     }
+    // Exact words first: "7" is the 7 key, not "17" or "Shift+7".
+    matches.sort_by_key(|m| m["match"] != "exact");
     matches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::key_aliases;
+
+    #[test]
+    fn symbols_find_their_named_keys() {
+        assert!(key_aliases("+").contains(&"add"), "+ is the Add key");
+        assert!(key_aliases("=").contains(&"equals"));
+        assert!(key_aliases("×").contains(&"multiply"));
+        assert!(key_aliases("add").contains(&"+"), "and the other way round");
+        assert!(key_aliases("sign in").is_empty(), "ordinary words have no aliases");
+    }
 }
