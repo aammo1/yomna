@@ -3,8 +3,10 @@
 
 use crate::atspi::{find_text_matches, press, read_window_ui, UiControl};
 use crate::hyprland::{
-    focus_window, front_window, is_hyprland, is_wayland, no_window, resolve, win_info, window_at, Win,
+    focus_window, front_window, is_browser, is_file_manager, is_hyprland, is_wayland, no_window, resolve, win_info,
+    window_at, Win,
 };
+use crate::ocr::ocr_find_win;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
@@ -142,6 +144,113 @@ impl Mod {
             Mod::Super => "super",
         }
     }
+
+    fn evdev_code(self) -> u16 {
+        match self {
+            Mod::Ctrl => 29,  // KEY_LEFTCTRL
+            Mod::Shift => 42, // KEY_LEFTSHIFT
+            Mod::Alt => 56,   // KEY_LEFTALT
+            Mod::Super => 125, // KEY_LEFTMETA
+        }
+    }
+}
+
+/// Map normalized keysym to Linux evdev keycode for `ydotool key` (works in Wayland, XWayland, and fcitx5).
+fn evdev_keycode(key: &str) -> Option<u16> {
+    Some(match key {
+        "Escape" => 1,
+        "1" => 2,
+        "2" => 3,
+        "3" => 4,
+        "4" => 5,
+        "5" => 6,
+        "6" => 7,
+        "7" => 8,
+        "8" => 9,
+        "9" => 10,
+        "0" => 11,
+        "minus" | "-" => 12,
+        "=" => 13,
+        "BackSpace" => 14,
+        "Tab" => 15,
+        "q" => 16,
+        "w" => 17,
+        "e" => 18,
+        "r" => 19,
+        "t" => 20,
+        "y" => 21,
+        "u" => 22,
+        "i" => 23,
+        "o" => 24,
+        "p" => 25,
+        "[" => 26,
+        "]" => 27,
+        "Return" => 28,
+        "a" => 30,
+        "s" => 31,
+        "d" => 32,
+        "f" => 33,
+        "g" => 34,
+        "h" => 35,
+        "j" => 36,
+        "k" => 37,
+        "l" => 38,
+        ";" => 39,
+        "'" => 40,
+        "`" => 41,
+        "\\" => 43,
+        "z" => 44,
+        "x" => 45,
+        "c" => 46,
+        "v" => 47,
+        "b" => 48,
+        "n" => 49,
+        "m" => 50,
+        "," => 51,
+        "." => 52,
+        "/" => 53,
+        "space" => 57,
+        "F1" => 59,
+        "F2" => 60,
+        "F3" => 61,
+        "F4" => 62,
+        "F5" => 63,
+        "F6" => 64,
+        "F7" => 65,
+        "F8" => 66,
+        "F9" => 67,
+        "F10" => 68,
+        "F11" => 87,
+        "F12" => 88,
+        "Home" => 102,
+        "Up" => 103,
+        "Page_Up" => 104,
+        "Left" => 105,
+        "Right" => 106,
+        "End" => 107,
+        "Down" => 108,
+        "Page_Down" => 109,
+        "Insert" => 110,
+        "Delete" => 111,
+        _ => return None,
+    })
+}
+
+fn ydotool_available() -> bool {
+    if !has_cmd("ydotool") {
+        return false;
+    }
+    if let Ok(sock) = std::env::var("YDOTOOL_SOCKET") {
+        if std::path::Path::new(&sock).exists() {
+            return true;
+        }
+    }
+    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
+        if std::path::Path::new(&format!("{rt}/.ydotool_socket")).exists() {
+            return true;
+        }
+    }
+    std::path::Path::new("/tmp/.ydotool_socket").exists()
 }
 
 pub fn parse_key_combo(combo: &str) -> Result<(Vec<Mod>, String), String> {
@@ -328,14 +437,13 @@ fn do_click(x: i32, y: i32, kind: ClickKind) -> Result<(), String> {
             );
         }
         move_pointer(x, y)?;
-        let codes: &[&str] = match kind {
-            ClickKind::Left => &["0xC0"],
-            ClickKind::DoubleLeft => &["0xC0", "0xC0"],
-            ClickKind::Right => &["0xC1"],
+        let args: &[&str] = match kind {
+            ClickKind::Left => &["click", "0xC0"],
+            ClickKind::DoubleLeft => &["click", "-r", "2", "-D", "25", "0xC0"],
+            ClickKind::Right => &["click", "0xC1"],
         };
         let out = Command::new("ydotool")
-            .arg("click")
-            .args(codes)
+            .args(args)
             .stdin(Stdio::null())
             .output()
             .map_err(|e| format!("failed to run ydotool click: {e}"))?;
@@ -423,11 +531,78 @@ fn do_scroll(x: i32, y: i32, dir: &str, amount: i32) -> Result<(), String> {
     Ok(())
 }
 
+fn ydotool_key(mods: &[Mod], code: u16) -> Result<(), String> {
+    let mut args: Vec<String> = vec!["key".to_string()];
+    for m in mods {
+        args.push(format!("{}:1", m.evdev_code()));
+    }
+    args.push(format!("{code}:1"));
+    args.push(format!("{code}:0"));
+    for m in mods.iter().rev() {
+        args.push(format!("{}:0", m.evdev_code()));
+    }
+    let out = Command::new("ydotool")
+        .args(&args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("failed to run ydotool key: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "ydotool key failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    sleep(Duration::from_millis(50));
+    Ok(())
+}
+
+fn paste_via_clipboard(text: &str) -> Result<(), String> {
+    if !has_cmd("wl-copy") || !ydotool_available() {
+        return Err("clipboard paste unavailable".to_string());
+    }
+    let mut child = Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn wl-copy: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| format!("wl-copy wait failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("wl-copy failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    sleep(Duration::from_millis(40));
+    // Ctrl+V via evdev (29 = Ctrl, 47 = V)
+    ydotool_key(&[Mod::Ctrl], 47)?;
+    sleep(Duration::from_millis(40));
+    Ok(())
+}
+
 fn do_type(text: &str) -> Result<(), String> {
     if text.is_empty() {
         return Ok(());
     }
     if wayland_session() {
+        let ascii_only = text.bytes().all(|b| matches!(b, b'\n' | b'\t' | 0x20..=0x7E));
+        // Prefer ydotool (kernel uinput) for ASCII: works reliably in Chrome, Electron, XWayland, GTK4, Qt, and with
+        // fcitx5 active, whereas wtype's virtual-keyboard protocol is ignored by XWayland and conflicts with fcitx5.
+        if ascii_only && ydotool_available() {
+            let out = Command::new("ydotool")
+                .args(["type", "-e", "0", "-d", "8", "-H", "8", "--", text])
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|e| format!("failed to run ydotool type: {e}"))?;
+            if out.status.success() {
+                sleep(Duration::from_millis(40));
+                return Ok(());
+            }
+        }
+        // Non-ASCII text (Arabic, accented letters, emoji): paste via wl-copy + Ctrl+V when ydotoold is running.
+        if !ascii_only && paste_via_clipboard(text).is_ok() {
+            return Ok(());
+        }
         if has_cmd("wtype") {
             let mut child = Command::new("wtype")
                 .args(["-d", "6", "-"])
@@ -448,7 +623,7 @@ fn do_type(text: &str) -> Result<(), String> {
         }
         if has_cmd("ydotool") {
             let out = Command::new("ydotool")
-                .args(["type", "--key-delay", "6", "--", text])
+                .args(["type", "--key-delay", "8", "--", text])
                 .stdin(Stdio::null())
                 .output()
                 .map_err(|e| format!("failed to run ydotool type: {e}"))?;
@@ -458,7 +633,7 @@ fn do_type(text: &str) -> Result<(), String> {
             sleep(Duration::from_millis(40));
             return Ok(());
         }
-        return Err("Keyboard typing on Wayland requires wtype or ydotool (install wtype).".to_string());
+        return Err("Keyboard typing on Wayland requires ydotool or wtype.".to_string());
     }
 
     if !has_cmd("xdotool") {
@@ -485,6 +660,13 @@ fn do_type(text: &str) -> Result<(), String> {
 fn do_key(combo: &str) -> Result<(), String> {
     let (mods, key) = parse_key_combo(combo)?;
     if wayland_session() {
+        if ydotool_available() {
+            if let Some(code) = evdev_keycode(&key) {
+                if ydotool_key(&mods, code).is_ok() {
+                    return Ok(());
+                }
+            }
+        }
         if has_cmd("wtype") {
             let mut args: Vec<String> = Vec::new();
             for m in &mods {
@@ -508,7 +690,7 @@ fn do_key(combo: &str) -> Result<(), String> {
             sleep(Duration::from_millis(50));
             return Ok(());
         }
-        return Err("Key press on Wayland requires wtype (install wtype).".to_string());
+        return Err("Key press on Wayland requires ydotool or wtype.".to_string());
     }
 
     if !has_cmd("xdotool") {
@@ -579,6 +761,119 @@ fn find_control<'a>(controls: &'a [UiControl], s: &Value) -> Option<&'a UiContro
         .iter()
         .find(|c| c.label.to_ascii_lowercase() == nl)
         .or_else(|| controls.iter().find(|c| c.label.to_ascii_lowercase().contains(&nl)))
+        .or_else(|| controls.iter().find(|c| !c.value.is_empty() && c.value.to_ascii_lowercase().contains(&nl)))
+}
+
+fn is_input_role(role: &str) -> bool {
+    matches!(role, "text field" | "combo box" | "password field")
+}
+
+fn is_url_bar_field(field_low: &str) -> bool {
+    ["url", "address", "omnibox", "location bar", "search or type", "type a url", "web address"]
+        .iter()
+        .any(|k| field_low.contains(k))
+}
+
+fn find_text_field<'a>(controls: &'a [UiControl], s: &Value) -> Option<&'a UiControl> {
+    if let Some(id) = s.get("id").and_then(Value::as_i64) {
+        if id >= 1 {
+            if let Some(c) = controls.get(id as usize - 1) {
+                return Some(c);
+            }
+        }
+    }
+    let name = s_str(s, "field").or_else(|| s_str(s, "text")).unwrap_or("").trim();
+    if let Ok(id) = name.parse::<usize>() {
+        if id >= 1 {
+            if let Some(c) = controls.get(id - 1) {
+                return Some(c);
+            }
+        }
+    }
+    let inputs: Vec<&UiControl> = controls
+        .iter()
+        .filter(|c| is_input_role(&c.role) && ((!c.offscreen && !c.bounds.is_empty()) || c.focused))
+        .collect();
+    if inputs.is_empty() {
+        return None;
+    }
+    // Prefer inputs with valid screen bounds first, then fall back to already-focused inputs whose
+    // AT-SPI bounds are transiently [0, 0, 0, 0] right after page load (Zen/Firefox).
+    let match_in = |pool: &[&'a UiControl]| -> Option<&'a UiControl> {
+        let nl = name.to_ascii_lowercase();
+        if !nl.is_empty() {
+            if let Some(c) = pool.iter().find(|c| c.label.to_ascii_lowercase() == nl) {
+                return Some(*c);
+            }
+            if let Some(c) = pool.iter().find(|c| c.label.to_ascii_lowercase().contains(&nl)) {
+                return Some(*c);
+            }
+            if let Some(c) = pool
+                .iter()
+                .find(|c| !c.value.is_empty() && c.value.to_ascii_lowercase().contains(&nl))
+            {
+                return Some(*c);
+            }
+            const STOP: &[&str] = &["the", "and", "for", "with", "type", "bar", "box", "field", "input", "here"];
+            let tokens: Vec<&str> = nl
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|t| t.len() >= 3 && !STOP.contains(t))
+                .collect();
+            if !tokens.is_empty() {
+                if let Some(c) = pool.iter().find(|c| {
+                    let cl = c.label.to_ascii_lowercase();
+                    tokens.iter().any(|t| cl.contains(t))
+                }) {
+                    return Some(*c);
+                }
+            }
+        }
+        if pool.len() == 1
+            && (nl.is_empty()
+                || ["search", "query", "input", "text", "box", "field", "address", "url", "message"]
+                    .iter()
+                    .any(|w| nl.contains(w)))
+        {
+            return Some(pool[0]);
+        }
+        None
+    };
+    let bounded: Vec<&UiControl> = inputs.iter().copied().filter(|c| !c.bounds.is_empty()).collect();
+    if let Some(c) = match_in(&bounded) {
+        return Some(c);
+    }
+    let focused_only: Vec<&UiControl> = inputs.iter().copied().filter(|c| c.bounds.is_empty() && c.focused).collect();
+    match_in(&focused_only)
+}
+
+fn is_file_entry_click(w: &Win, texts: &[String], label: &str, gx: i32, gy: i32) -> bool {
+    if !is_file_manager(&w.app, &w.class, &w.exe) {
+        return false;
+    }
+    // Header/toolbar at top or status bar at bottom: single-click buttons, never double-click.
+    if gy < w.bounds.y + 52 || gy > w.bounds.y + w.bounds.h - 46 {
+        return false;
+    }
+    let ll = label.trim().to_ascii_lowercase();
+    if !ll.is_empty()
+        && texts.iter().any(|t| {
+            let tl = t.trim().to_ascii_lowercase();
+            tl == format!("{ll}. folder") || tl == format!("{ll}. file")
+        })
+    {
+        return true;
+    }
+    // Main file pane (right of a typical 200px sidebar, or anywhere when sidebar is collapsed)
+    gx >= w.bounds.x + 12
+}
+
+fn point_inside_non_input_control(controls: &[UiControl], gx: i32, gy: i32) -> bool {
+    controls.iter().any(|c| {
+        !c.offscreen
+            && !c.bounds.is_empty()
+            && matches!(c.role.as_str(), "link" | "button" | "menu item" | "tab")
+            && c.bounds.contains(gx, gy)
+    })
 }
 
 fn coords_for_step(s: &Value, w: &Win, controls: &[UiControl]) -> Option<(i32, i32)> {
@@ -629,7 +924,7 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
     };
 
     let target = resolve_plan_target(&plan);
-    let w = resolve(&target)
+    let mut w = resolve(&target)
         .ok_or_else(|| json!({ "ok": false, "error": no_window(&target), "done": [] }))?;
 
     if let Some(name) = check_win_hands_off(&w) {
@@ -640,10 +935,25 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
         }));
     }
 
-    let mut ui = read_window_ui(&w);
     let mut done: Vec<String> = Vec::new();
     let mut borrowed = false;
     progress(json!({ "ev": "start", "window": win_info(&w), "steps": steps.len() }));
+
+    // Focus before reading UI so tiling/scrolling WMs (Hyprland) bring the window on-screen
+    // before we cache control coordinates.
+    if !w.focused && steps.iter().any(|s| s_str(s, "do") != Some("wait")) {
+        progress(json!({ "ev": "borrow" }));
+        borrowed = true;
+        if let Err(e) = focus_window(&w) {
+            progress(json!({ "ev": "return" }));
+            return Err(json!({ "ok": false, "error": e, "done": done }));
+        }
+        if let Some(nw) = resolve(&target) {
+            w = nw;
+        }
+    }
+
+    let mut ui = read_window_ui(&w);
 
     let mut ensure_focus = || -> Result<(), String> {
         if !borrowed {
@@ -673,16 +983,41 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
         let step_res: Result<(), String> = (|| {
             match what {
                 "click_at" | "double_click" | "right_click" => {
-                    let (gx, gy) = coords_for_step(s, &w, &ui.controls)
-                        .ok_or_else(|| format!("Step {n}: {what} needs x and y"))?;
-                    verify_spot_safe(gx, gy)?;
-                    ensure_focus()?;
-                    progress(json!({ "ev": "step", "i": i, "do": what, "bounds": [gx - 6, gy - 6, 12, 12] }));
                     let kind = match what {
                         "double_click" => ClickKind::DoubleLeft,
                         "right_click" => ClickKind::Right,
                         _ => ClickKind::Left,
                     };
+                    let mut spot = coords_for_step(s, &w, &ui.controls);
+                    if spot.is_none() {
+                        if let Some(q) = s_str(s, "text").map(str::trim).filter(|q| !q.is_empty()) {
+                            let matches = find_text_matches(&w, q);
+                            if let Some(m) = matches.first() {
+                                if let Some(b) = m["bounds"].as_array() {
+                                    let (x, y, bw, bh) = (
+                                        b.first().and_then(Value::as_i64).unwrap_or(0) as i32,
+                                        b.get(1).and_then(Value::as_i64).unwrap_or(0) as i32,
+                                        b.get(2).and_then(Value::as_i64).unwrap_or(0) as i32,
+                                        b.get(3).and_then(Value::as_i64).unwrap_or(0) as i32,
+                                    );
+                                    if bw > 0 && bh > 0 {
+                                        spot = Some((x + bw / 2, y + bh / 2));
+                                    }
+                                }
+                            }
+                            if spot.is_none() {
+                                ensure_focus()?;
+                                sleep(Duration::from_millis(60));
+                                if let Some(hit) = ocr_find_win(&w, q, false).first() {
+                                    spot = Some((hit.bounds.mid_x(), hit.bounds.mid_y()));
+                                }
+                            }
+                        }
+                    }
+                    let (gx, gy) = spot.ok_or_else(|| format!("Step {n}: {what} needs x and y (or visible text)"))?;
+                    verify_spot_safe(gx, gy)?;
+                    ensure_focus()?;
+                    progress(json!({ "ev": "step", "i": i, "do": what, "bounds": [gx - 6, gy - 6, 12, 12] }));
                     do_click(gx, gy, kind)?;
                     done.push(format!("{what} at {gx},{gy}"));
                 }
@@ -717,38 +1052,63 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                         return Err(format!("Step {n}: no visible text \"\" in {}.", w.app));
                     }
                     let matches = find_text_matches(&w, q);
-                    let Some(m) = matches.first() else {
-                        return Err(format!(
-                            "Step {n}: no visible text \"{q}\" in {}. Check the exact words with a screenshot or read_window.",
-                            w.app
-                        ));
-                    };
-                    let text = m["text"].as_str().unwrap_or(q);
-                    if risky(text) && !confirmed {
-                        return Err(format!(
-                            "Stopped before clicking \"{text}\": it could delete, pay, send or sign out, and the user hasn't said yes to that. Tell them, and let them click it themselves."
-                        ));
+                    if let Some(m) = matches.first() {
+                        let text = m["text"].as_str().unwrap_or(q);
+                        if risky(text) && !confirmed {
+                            return Err(format!(
+                                "Stopped before clicking \"{text}\": it could delete, pay, send or sign out, and the user hasn't said yes to that. Tell them, and let them click it themselves."
+                            ));
+                        }
+                        let b = m["bounds"].as_array().ok_or_else(|| format!("Step {n}: no visible text \"{q}\" in {}.", w.app))?;
+                        let (x, y, bw, bh) = (
+                            b.first().and_then(Value::as_i64).unwrap_or(0) as i32,
+                            b.get(1).and_then(Value::as_i64).unwrap_or(0) as i32,
+                            b.get(2).and_then(Value::as_i64).unwrap_or(0) as i32,
+                            b.get(3).and_then(Value::as_i64).unwrap_or(0) as i32,
+                        );
+                        if bw <= 0 || bh <= 0 {
+                            return Err(format!("Step {n}: couldn't click \"{q}\"."));
+                        }
+                        let (gx, gy) = (x + bw / 2, y + bh / 2);
+                        verify_spot_safe(gx, gy)?;
+                        ensure_focus()?;
+                        progress(json!({ "ev": "step", "i": i, "do": "click_text", "label": text, "bounds": [x, y, bw, bh] }));
+                        let id = m["id"].as_u64().unwrap_or(0) as usize;
+                        let double_entry = is_file_entry_click(&w, &ui.texts, text, gx, gy);
+                        let pressed = !double_entry
+                            && ui
+                                .controls
+                                .iter()
+                                .find(|c| c.id == id && !matches!(c.role.as_str(), "text field" | "combo box") && (c.label == text || c.value == text))
+                                .is_some_and(press);
+                        if !pressed {
+                            do_click(gx, gy, if double_entry { ClickKind::DoubleLeft } else { ClickKind::Left })?;
+                        }
+                        done.push(format!("clicked \"{text}\""));
+                    } else {
+                        // OCR fallback (Tesseract on grim capture): ensure the window is focused and visible first.
+                        ensure_focus()?;
+                        sleep(Duration::from_millis(60));
+                        let ocr_hits = ocr_find_win(&w, q, false);
+                        let Some(hit) = ocr_hits.first() else {
+                            return Err(format!(
+                                "Step {n}: no visible text \"{q}\" in {}. Check the exact words with a screenshot or read_window.",
+                                w.app
+                            ));
+                        };
+                        if risky(&hit.text) && !confirmed {
+                            return Err(format!(
+                                "Stopped before clicking \"{}\": it could delete, pay, send or sign out, and the user hasn't said yes to that. Tell them, and let them click it themselves.",
+                                hit.text
+                            ));
+                        }
+                        let (gx, gy) = (hit.bounds.mid_x(), hit.bounds.mid_y());
+                        verify_spot_safe(gx, gy)?;
+                        let double_entry = is_file_entry_click(&w, &ui.texts, &hit.text, gx, gy);
+                        progress(json!({ "ev": "step", "i": i, "do": "click_text", "label": hit.text, "bounds": hit.bounds.to_arr() }));
+                        do_click(gx, gy, if double_entry { ClickKind::DoubleLeft } else { ClickKind::Left })?;
+                        done.push(format!("clicked \"{}\"", hit.text));
                     }
-                    let b = m["bounds"].as_array().ok_or_else(|| format!("Step {n}: no visible text \"{q}\" in {}.", w.app))?;
-                    let (x, y, bw, bh) = (
-                        b.first().and_then(Value::as_i64).unwrap_or(0) as i32,
-                        b.get(1).and_then(Value::as_i64).unwrap_or(0) as i32,
-                        b.get(2).and_then(Value::as_i64).unwrap_or(0) as i32,
-                        b.get(3).and_then(Value::as_i64).unwrap_or(0) as i32,
-                    );
-                    if bw <= 0 || bh <= 0 {
-                        return Err(format!("Step {n}: couldn't click \"{q}\"."));
-                    }
-                    let (gx, gy) = (x + bw / 2, y + bh / 2);
-                    verify_spot_safe(gx, gy)?;
-                    ensure_focus()?;
-                    progress(json!({ "ev": "step", "i": i, "do": "click_text", "label": text, "bounds": [x, y, bw, bh] }));
-                    let id = m["id"].as_u64().unwrap_or(0) as usize;
-                    let pressed = ui.controls.iter().find(|c| c.id == id && (c.label == text || c.value == text)).is_some_and(press);
-                    if !pressed {
-                        do_click(gx, gy, ClickKind::Left)?;
-                    }
-                    done.push(format!("clicked \"{text}\""));
                 }
                 "type" => {
                     let text = s_str(s, "text").unwrap_or("");
@@ -759,23 +1119,81 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                 }
                 "fill" | "set" => {
                     let text = s_str(s, "text").unwrap_or("");
-                    let c = find_control(&ui.controls, s).ok_or_else(|| {
-                        format!(
-                            "Step {n}: no text field called \"{}\" here. Check its label with read_window.",
-                            s_str(s, "field").unwrap_or("")
-                        )
-                    })?;
-                    if c.bounds.is_empty() {
-                        return Err(format!("Step {n}: field \"{}\" has no screen bounds.", c.label));
+                    let field_name = s_str(s, "field").unwrap_or("").trim();
+                    let field_low = field_name.to_ascii_lowercase();
+                    let mut matched_field = find_text_field(&ui.controls, s).cloned();
+                    // Browsers (Zen/Firefox/Chrome) populate their document-web AT-SPI subtree ~200-350 ms after
+                    // focus/a11y activation; retry once before falling back to Ctrl+L or OCR.
+                    if matched_field.is_none() && (is_browser(&w.app, &w.class, &w.exe) || ui.controls.len() < 5) {
+                        ensure_focus()?;
+                        sleep(Duration::from_millis(350));
+                        ui = read_window_ui(&w);
+                        matched_field = find_text_field(&ui.controls, s).cloned();
                     }
-                    let (gx, gy) = (c.bounds.mid_x(), c.bounds.mid_y());
-                    verify_spot_safe(gx, gy)?;
-                    ensure_focus()?;
-                    progress(json!({ "ev": "step", "i": i, "do": what, "label": c.label, "bounds": c.bounds.to_arr() }));
-                    do_click(gx, gy, ClickKind::Left)?;
-                    do_key("ctrl+a")?;
-                    do_type(text)?;
-                    done.push(format!("{} = \"{}\"", c.label, text.chars().take(40).collect::<String>()));
+                    if let Some(mut c) = matched_field {
+                        if c.bounds.is_empty() && c.focused {
+                            // Zen/Firefox can transiently report [0,0,0,0] right after page load for an already-focused field.
+                            sleep(Duration::from_millis(120));
+                            let fresh = read_window_ui(&w);
+                            if let Some(fc) = find_text_field(&fresh.controls, s) {
+                                if !fc.bounds.is_empty() {
+                                    c = fc.clone();
+                                }
+                            }
+                        }
+                        ensure_focus()?;
+                        if !c.bounds.is_empty() {
+                            let (gx, gy) = (c.bounds.mid_x(), c.bounds.mid_y());
+                            verify_spot_safe(gx, gy)?;
+                            progress(json!({ "ev": "step", "i": i, "do": what, "label": c.label, "bounds": c.bounds.to_arr() }));
+                            do_click(gx, gy, ClickKind::Left)?;
+                            sleep(Duration::from_millis(80));
+                        } else if c.focused {
+                            progress(json!({ "ev": "step", "i": i, "do": what, "label": c.label }));
+                        } else {
+                            return Err(format!("Step {n}: field \"{}\" has no screen bounds.", c.label));
+                        }
+                        let _ = do_key("ctrl+a");
+                        do_type(text)?;
+                        done.push(format!("{} = \"{}\"", c.label, text.chars().take(40).collect::<String>()));
+                    } else if is_browser(&w.app, &w.class, &w.exe) && is_url_bar_field(&field_low) {
+                        // Browser address bar: Ctrl+L focuses it reliably across Chrome, Zen, Firefox, and Chromium.
+                        ensure_focus()?;
+                        progress(json!({ "ev": "step", "i": i, "do": what, "label": field_name }));
+                        do_key("ctrl+l")?;
+                        sleep(Duration::from_millis(100));
+                        do_type(text)?;
+                        done.push(format!("{field_name} = \"{}\"", text.chars().take(40).collect::<String>()));
+                    } else if !field_name.is_empty() {
+                        // OCR fallback for web/Electron/GTK4 fields, ignoring hits inside non-input links/buttons (e.g. "How Search works").
+                        ensure_focus()?;
+                        sleep(Duration::from_millis(60));
+                        let ocr_hits = ocr_find_win(&w, field_name, true);
+                        let safe_hit = ocr_hits
+                            .iter()
+                            .find(|h| !point_inside_non_input_control(&ui.controls, h.bounds.mid_x(), h.bounds.mid_y()));
+                        if let Some(hit) = safe_hit {
+                            let (gx, gy) = (hit.bounds.mid_x(), hit.bounds.mid_y());
+                            verify_spot_safe(gx, gy)?;
+                            progress(json!({ "ev": "step", "i": i, "do": what, "label": hit.text, "bounds": hit.bounds.to_arr() }));
+                            do_click(gx, gy, ClickKind::Left)?;
+                            sleep(Duration::from_millis(100));
+                            let _ = do_key("ctrl+a");
+                            do_type(text)?;
+                            done.push(format!("{} = \"{}\"", hit.text, text.chars().take(40).collect::<String>()));
+                        } else if let Some(fc) = ui.controls.iter().find(|c| c.focused && is_input_role(&c.role)) {
+                            progress(json!({ "ev": "step", "i": i, "do": what, "label": fc.label }));
+                            let _ = do_key("ctrl+a");
+                            do_type(text)?;
+                            done.push(format!("{} = \"{}\"", fc.label, text.chars().take(40).collect::<String>()));
+                        } else {
+                            return Err(format!(
+                                "Step {n}: no text field called \"{field_name}\" here. Check its label with read_window or take_screenshot and click_at."
+                            ));
+                        }
+                    } else {
+                        return Err(format!("Step {n}: no text field called \"\" here. Check its label with read_window."));
+                    }
                 }
                 "choose" => {
                     let option = s_str(s, "option").or_else(|| s_str(s, "text")).unwrap_or("");
@@ -848,10 +1266,13 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
     if borrowed {
         progress(json!({ "ev": "return" }));
     }
+    let controls: Vec<Value> = ui.controls.iter().map(|c| c.to_json()).collect();
     Ok(json!({
         "ok": true,
         "done": done,
         "window": win_info(&w),
+        "controls": controls,
+        "texts": ui.texts,
     }))
 }
 
@@ -908,5 +1329,46 @@ mod tests {
         assert_eq!(parse_key_combo("Return").unwrap(), (vec![], "Return".to_string()));
         assert_eq!(parse_key_combo("escape").unwrap(), (vec![], "Escape".to_string()));
         assert!(parse_key_combo("").is_err());
+    }
+
+    #[test]
+    fn find_text_field_ignores_buttons_and_short_stop_words() {
+        use crate::Rect;
+        let mk = |id, role: &str, label: &str| UiControl {
+            id,
+            role: role.to_string(),
+            label: label.to_string(),
+            value: String::new(),
+            focused: false,
+            offscreen: false,
+            bounds: Rect { x: 10, y: 10, w: 120, h: 30 },
+            node: None,
+            actionable: true,
+        };
+        let controls = vec![
+            mk(1, "button", "More options"),
+            mk(2, "button", "History"),
+            mk(3, "text field", "Address and search bar"),
+        ];
+        // "Search or type a URL" must not match "More options" or "History" via "or"; it must match the text field.
+        let found = find_text_field(&controls, &json!({ "field": "Search or type a URL" }));
+        assert_eq!(found.map(|c| c.id), Some(3));
+
+        // When only buttons exist, find_text_field must return None so URL-bar Ctrl+L or OCR fallback runs.
+        let buttons_only = vec![mk(1, "button", "More options"), mk(2, "button", "History")];
+        assert!(find_text_field(&buttons_only, &json!({ "field": "Search or type a URL" })).is_none());
+
+        assert!(is_url_bar_field("search or type a url"));
+        assert!(is_url_bar_field("url bar"));
+        assert!(is_url_bar_field("address bar"));
+        assert!(!is_url_bar_field("email"));
+
+        // Zen/Firefox transiently reports [0,0,0,0] bounds for an already-focused Search box right after page load.
+        let mut zen_search = mk(3, "combo box", "Search");
+        zen_search.focused = true;
+        zen_search.bounds = Rect { x: 0, y: 0, w: 0, h: 0 };
+        let zen_controls = vec![mk(1, "link", "How Search works"), zen_search];
+        assert_eq!(find_text_field(&zen_controls, &json!({ "field": "Search" })).map(|c| c.id), Some(3));
+        assert!(point_inside_non_input_control(&zen_controls, 50, 20));
     }
 }

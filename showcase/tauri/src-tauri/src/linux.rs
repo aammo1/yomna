@@ -6,6 +6,7 @@
 // (the cursor over other apps, global shortcuts, grabbing the screen) is handled per feature below.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -73,22 +74,97 @@ fn hit_rects(flat: &[f64]) -> Vec<(i32, i32, i32, i32)> {
         .collect()
 }
 
+static HANDS_BUSY: AtomicBool = AtomicBool::new(false);
+static OVERLAY_HAS_RECTS: AtomicBool = AtomicBool::new(false);
+
+/// On Hyprland/Sway/i3/COSMIC, XWayland windows intercept pointer clicks across their whole bounding box regardless
+/// of `XShapeInput` (`input_shape_combine_region`). While `yomna-hands` acts in another app, hide the overlay
+/// immediately so clicks and typing hit the target app, then restore it once `hands` finishes.
+pub(crate) fn set_hands_busy(app: &AppHandle, busy: bool) {
+    HANDS_BUSY.store(busy, Ordering::SeqCst);
+    if !unmanaged_overlay() {
+        return;
+    }
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        use gtk::prelude::WidgetExt;
+        for (label, w) in app2.webview_windows() {
+            if !crate::is_overlay(&label) {
+                continue;
+            }
+            let Ok(gw) = w.gtk_window() else { continue };
+            if busy {
+                if gw.is_visible() {
+                    gw.hide();
+                }
+            } else if OVERLAY_HAS_RECTS.load(Ordering::SeqCst) && !gw.is_visible() {
+                if let Some(win) = gw.window() {
+                    win.set_override_redirect(true);
+                }
+                gw.show_all();
+            }
+        }
+    });
+}
+
+/// Ensures the overlay is mapped before an interaction, live call, or drawing begins so WebKitGTK's
+/// `requestAnimationFrame` loop runs immediately after an idle hide.
+pub(crate) fn ensure_overlay_shown(app: &AppHandle) {
+    if !unmanaged_overlay() || HANDS_BUSY.load(Ordering::SeqCst) {
+        return;
+    }
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        use gtk::prelude::WidgetExt;
+        for (label, w) in app2.webview_windows() {
+            if !crate::is_overlay(&label) {
+                continue;
+            }
+            let Ok(gw) = w.gtk_window() else { continue };
+            if !gw.is_visible() {
+                if let Some(win) = gw.window() {
+                    win.set_override_redirect(true);
+                }
+                gw.show_all();
+            }
+        }
+    });
+}
+
 /// Makes the rectangles the overlay's input shape: clicks land on them and pass through everywhere else. No cursor
 /// tracking is involved, so it works on Wayland too, where the cursor can't be seen over other apps.
 pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64]) {
     use gtk::cairo::{RectangleInt, Region};
     use gtk::prelude::WidgetExt;
     let rects = hit_rects(flat);
+    let has_rects = !rects.is_empty();
+    OVERLAY_HAS_RECTS.store(has_rects, Ordering::SeqCst);
     // YOMNA_TRACE=1: the shape goes to stderr, for checking click-through from outside (and for bug reports).
     if trace() {
         eprintln!("hit rects: {rects:?}");
     }
     let w = window.clone();
     let _ = window.run_on_main_thread(move || {
-        let Some(win) = w.gtk_window().ok().and_then(|g| g.window()) else { return };
+        let Ok(gw) = w.gtk_window() else { return };
+        if unmanaged_overlay() {
+            if HANDS_BUSY.load(Ordering::SeqCst) || !has_rects {
+                if gw.is_visible() {
+                    gw.hide();
+                }
+                return;
+            }
+            if !gw.is_visible() {
+                if let Some(win) = gw.window() {
+                    win.set_override_redirect(true);
+                }
+                gw.show_all();
+            }
+        }
+        let Some(win) = gw.window() else { return };
         // GDK works in the same logical pixels as the page.
         let list: Vec<RectangleInt> = rects.iter().map(|&(x, y, w, h)| RectangleInt::new(x, y, w, h)).collect();
         let region = Region::create_rectangles(&list);
+        gw.input_shape_combine_region(Some(&region));
         win.input_shape_combine_region(&region, 0, 0);
         // No compositor (a bare X11 window manager): the transparent parts would draw black over the whole screen,
         // so the window is cut down to the same rectangles.

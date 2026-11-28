@@ -172,6 +172,9 @@ if (process.platform === 'darwin') {
   assert.deepEqual(fixAct({ app: 'Omacalc', steps: ["{do: 'click_text', text: '7'}", "{do: 'click_text', text: '+'}"] }).steps, [{ do: 'click_text', text: '7' }, { do: 'click_text', text: '+' }]);
   assert.deepEqual(fixAct({ app: 'x', steps: ['{"do":"key","key":"return"}'] }).steps, [{ do: 'key', key: 'return' }]);
   assert.deepEqual(fixAct({ app: 'x', steps: '[{"do":"type","text":"hi"}]' }).steps, [{ do: 'type', text: 'hi' }], 'the whole list as a string');
+  // Regression (log of 2026-11-28 04:55-04:58): Gemini Live put steps in `actions` with `steps: []`.
+  assert.deepEqual(fixAct({ app: 'Joplin', actions: ["{do: 'click_text', text: 'New note'}"], steps: [] }), { target: 'Joplin', steps: [{ do: 'click_text', text: 'New note' }] });
+  assert.deepEqual(fixAct({ app: 'Joplin', actions: ["{do: 'type', text: 'Hello World'}"], steps: [] }).steps, [{ do: 'type', text: 'Hello World' }]);
   console.log('linux app tests: passed');
 }
 

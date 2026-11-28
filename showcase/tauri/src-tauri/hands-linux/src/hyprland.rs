@@ -488,6 +488,7 @@ const BROWSER_NAMES: &[&str] = &[
     "zen-browser",
     "chromium",
     "google-chrome",
+    "google-chrome-stable",
     "chrome",
     "brave",
     "brave-browser",
@@ -500,14 +501,170 @@ const BROWSER_NAMES: &[&str] = &[
     "epiphany",
     "thorium",
     "arc",
+    "browseros",
+    "helium",
 ];
 
-pub fn is_browser(app: &str, class: &str, exe: &str) -> bool {
+const FILE_MANAGER_NAMES: &[&str] = &[
+    "nautilus",
+    "org.gnome.nautilus",
+    "thunar",
+    "dolphin",
+    "org.kde.dolphin",
+    "nemo",
+    "pcmanfm",
+    "pcmanfm-qt",
+    "caja",
+    "spacefm",
+    "yazi",
+];
+
+const CALCULATOR_NAMES: &[&str] = &[
+    "omacalc",
+    "gnome-calculator",
+    "org.gnome.calculator",
+    "kcalc",
+    "qalculate",
+    "qalculate-gtk",
+    "galculator",
+    "speedcrunch",
+];
+
+fn compact_name(s: &str) -> String {
+    s.trim()
+        .to_ascii_lowercase()
+        .strip_suffix(".desktop")
+        .unwrap_or(&s.trim().to_ascii_lowercase())
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+struct DesktopApp {
+    id: String,
+    name: String,
+    generic: String,
+    wm_class: String,
+    exec_bin: String,
+}
+
+fn load_desktop_apps() -> &'static [DesktopApp] {
+    static CACHE: std::sync::OnceLock<Vec<DesktopApp>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(home) = std::env::var("HOME") {
+            let data_home = std::env::var("XDG_DATA_HOME")
+                .unwrap_or_else(|_| format!("{home}/.local/share"));
+            dirs.push(std::path::PathBuf::from(data_home).join("applications"));
+            dirs.push(std::path::PathBuf::from(&home).join(".local/share/flatpak/exports/share/applications"));
+        }
+        let data_dirs = std::env::var("XDG_DATA_DIRS")
+            .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+        for d in data_dirs.split(':').filter(|s| !s.is_empty()) {
+            dirs.push(std::path::PathBuf::from(d).join("applications"));
+        }
+        dirs.push(std::path::PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for ent in entries.flatten() {
+                let fname = ent.file_name().to_string_lossy().into_owned();
+                if !fname.ends_with(".desktop") || !seen.insert(fname.clone()) {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(ent.path()) else { continue };
+                let mut in_main = false;
+                let (mut name, mut generic, mut wm_class, mut exec_bin) = (String::new(), String::new(), String::new(), String::new());
+                for raw in text.lines() {
+                    let line = raw.trim();
+                    if line.starts_with('[') {
+                        in_main = line == "[Desktop Entry]";
+                        continue;
+                    }
+                    if !in_main || line.starts_with('#') {
+                        continue;
+                    }
+                    let Some((k, v)) = line.split_once('=') else { continue };
+                    let k = k.trim();
+                    let v = v.trim();
+                    match k {
+                        "Name" if name.is_empty() => name = v.to_string(),
+                        "GenericName" if generic.is_empty() => generic = v.to_string(),
+                        "StartupWMClass" if wm_class.is_empty() => wm_class = v.to_string(),
+                        "Exec" if exec_bin.is_empty() => {
+                            if let Some(first) = v.split_whitespace().next() {
+                                exec_bin = first.trim_matches('"').rsplit('/').next().unwrap_or(first).to_string();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if !name.is_empty() || !wm_class.is_empty() {
+                    out.push(DesktopApp {
+                        id: fname.trim_end_matches(".desktop").to_string(),
+                        name,
+                        generic,
+                        wm_class,
+                        exec_bin,
+                    });
+                }
+            }
+        }
+        out
+    })
+}
+
+/// Resolve an app display name ("Files", "Google Chrome", "Zen Browser") via installed `.desktop` files
+/// into candidate window class / executable identifiers (`org.gnome.Nautilus`, `nautilus`, `google-chrome`, `zen`).
+fn desktop_aliases(want: &str) -> Vec<String> {
+    let w_low = want.trim().to_ascii_lowercase();
+    let w_cmp = compact_name(want);
+    if w_cmp.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for a in load_desktop_apps() {
+        let hits = [a.name.as_str(), a.generic.as_str(), a.id.as_str(), a.wm_class.as_str()]
+            .iter()
+            .any(|s| {
+                let sl = s.trim().to_ascii_lowercase();
+                let sc = compact_name(s);
+                !sl.is_empty() && (sl == w_low || sc == w_cmp)
+            });
+        if hits {
+            for cand in [&a.wm_class, &a.id, &a.exec_bin, &a.name] {
+                let c = cand.trim().to_ascii_lowercase();
+                if !c.is_empty() && !out.contains(&c) {
+                    out.push(c.clone());
+                }
+                if let Some(tail) = c.rsplit('.').next() {
+                    if !tail.is_empty() && !out.contains(&tail.to_string()) {
+                        out.push(tail.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn any_in_list(app: &str, class: &str, exe: &str, list: &[&str]) -> bool {
     [app, class, exe].iter().any(|s| {
         let l = s.to_ascii_lowercase();
         let tail = l.rsplit('.').next().unwrap_or(&l);
-        BROWSER_NAMES.iter().any(|b| l == *b || tail == *b || l.contains(b))
+        list.iter().any(|b| l == *b || tail == *b || l.contains(b))
     })
+}
+
+pub fn is_browser(app: &str, class: &str, exe: &str) -> bool {
+    any_in_list(app, class, exe, BROWSER_NAMES)
+}
+
+pub fn is_file_manager(app: &str, class: &str, exe: &str) -> bool {
+    any_in_list(app, class, exe, FILE_MANAGER_NAMES)
 }
 
 pub fn app_matches(app: &str, class: &str, exe: &str, want: &str) -> bool {
@@ -518,10 +675,52 @@ pub fn app_matches(app: &str, class: &str, exe: &str, want: &str) -> bool {
     if matches!(w.as_str(), "browser" | "web browser" | "my browser") {
         return is_browser(app, class, exe);
     }
-    [app, class, exe].iter().any(|cand| {
+    if matches!(w.as_str(), "files" | "file manager" | "file explorer" | "file browser" | "explorer" | "finder") {
+        if any_in_list(app, class, exe, FILE_MANAGER_NAMES) {
+            return true;
+        }
+    }
+    if matches!(w.as_str(), "calculator" | "calc") {
+        if any_in_list(app, class, exe, CALCULATOR_NAMES) {
+            return true;
+        }
+    }
+    let w_cmp = compact_name(&w);
+    let direct = [app, class, exe].iter().any(|cand| {
         let c = cand.trim().to_ascii_lowercase();
-        !c.is_empty() && (c == w || c.contains(&w) || w.contains(c.as_str()))
-    })
+        if c.is_empty() {
+            return false;
+        }
+        let tail = c.rsplit('.').next().unwrap_or(&c);
+        let c_cmp = compact_name(&c);
+        let t_cmp = compact_name(tail);
+        c == w
+            || tail == w
+            || c.contains(&w)
+            || (c.len() >= 3 && w.contains(c.as_str()))
+            || (!w_cmp.is_empty()
+                && (c_cmp == w_cmp
+                    || t_cmp == w_cmp
+                    || (w_cmp.len() >= 4 && c_cmp.contains(&w_cmp))
+                    || (t_cmp.len() >= 3 && w_cmp.contains(&t_cmp))))
+    });
+    if direct {
+        return true;
+    }
+    let aliases = desktop_aliases(&w);
+    if !aliases.is_empty() {
+        return [app, class, exe].iter().any(|cand| {
+            let c = cand.trim().to_ascii_lowercase();
+            let tail = c.rsplit('.').next().unwrap_or(&c);
+            let c_cmp = compact_name(&c);
+            !c.is_empty()
+                && aliases.iter().any(|a| {
+                    let a_cmp = compact_name(a);
+                    c == *a || tail == *a || (!a_cmp.is_empty() && c_cmp == a_cmp)
+                })
+        });
+    }
+    false
 }
 
 pub fn matches_window_id(w: &Win, spec: &str) -> bool {
@@ -542,7 +741,7 @@ pub fn matches_window_id(w: &Win, spec: &str) -> bool {
 
 pub fn resolve(target: &str) -> Option<Win> {
     let t = target.trim();
-    if t.is_empty() || t == "front" {
+    if t.is_empty() || t == "front" || t == "screen" {
         return front_window().or_else(|| windows().into_iter().next());
     }
     let all = windows();
@@ -550,15 +749,52 @@ pub fn resolve(target: &str) -> Option<Win> {
         return all.into_iter().find(|w| matches_window_id(w, id_spec));
     }
     if let Some(name) = t.strip_prefix("app:") {
+        let nl = name.trim().to_ascii_lowercase();
         return all
-            .into_iter()
-            .find(|w| app_matches(&w.app, &w.class, &w.exe, name));
+            .iter()
+            .find(|w| app_matches(&w.app, &w.class, &w.exe, name))
+            .cloned()
+            .or_else(|| {
+                (!nl.is_empty())
+                    .then(|| all.into_iter().find(|w| w.title.to_ascii_lowercase().contains(&nl)))
+                    .flatten()
+            });
     }
-    // Bare id or app name fallback
+    // Bare id, app name, or window title fallback
+    let tl = t.to_ascii_lowercase();
     all.iter()
         .find(|w| matches_window_id(w, t))
         .cloned()
-        .or_else(|| all.into_iter().find(|w| app_matches(&w.app, &w.class, &w.exe, t)))
+        .or_else(|| all.iter().find(|w| app_matches(&w.app, &w.class, &w.exe, t)).cloned())
+        .or_else(|| all.into_iter().find(|w| w.title.to_ascii_lowercase().contains(&tl)))
+}
+
+/// Monitor scale factor at logical coordinate `(x, y)` on Hyprland (1.0 when unknown or X11).
+pub fn monitor_scale_at(x: i32, y: i32) -> f64 {
+    if !is_hyprland() {
+        return 1.0;
+    }
+    let Ok(raw) = run_hyprctl(&["monitors", "-j"]) else {
+        return 1.0;
+    };
+    let Ok(mons) = serde_json::from_str::<Vec<Value>>(&raw) else {
+        return 1.0;
+    };
+    let mut fallback = 1.0;
+    for m in &mons {
+        let mx = m.get("x").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let my = m.get("y").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let mw = m.get("width").and_then(Value::as_i64).unwrap_or(0) as f64;
+        let mh = m.get("height").and_then(Value::as_i64).unwrap_or(0) as f64;
+        let scale = m.get("scale").and_then(Value::as_f64).unwrap_or(1.0).max(0.5);
+        fallback = scale;
+        let lw = (mw / scale).round() as i32;
+        let lh = (mh / scale).round() as i32;
+        if x >= mx && x < mx + lw && y >= my && y < my + lh {
+            return scale;
+        }
+    }
+    fallback
 }
 
 /// The window a click at (x, y) lands in. On Hyprland: only windows on a workspace that's showing (a window on another
@@ -786,5 +1022,16 @@ pub mod tests {
         assert_eq!(list[1].app, "Alacritty");
         assert!(matches_window_id(&list[0], "0x55c8ff01a540"));
         assert!(matches_window_id(&list[0], "94321760118080"), "decimal JS coercion matches hex address");
+    }
+
+    #[test]
+    fn matches_common_app_display_names_and_aliases() {
+        assert!(app_matches("org.gnome.Nautilus", "org.gnome.Nautilus", "nautilus", "Files"));
+        assert!(app_matches("org.gnome.Nautilus", "org.gnome.Nautilus", "nautilus", "file explorer"));
+        assert!(app_matches("google-chrome", "google-chrome", "chrome", "Google Chrome"));
+        assert!(app_matches("zen", "zen", "zen-bin", "Zen Browser"));
+        assert!(app_matches("omacalc", "omacalc", "omacalc", "Calculator"));
+        assert!(app_matches("google-chrome", "google-chrome", "chrome", "browser"));
+        assert!(!app_matches("org.gnome.Nautilus", "org.gnome.Nautilus", "nautilus", "Firefox"));
     }
 }

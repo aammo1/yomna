@@ -443,4 +443,74 @@ console.log('shape radius tests: passed');
   assert.deepEqual(checkDraw(a), [], 'and nothing else is wrong with it');
   const b = DrawArgs.parse({ say: 'WWII timeline', beats: [{ marks: [{ kind: 'point', at: { text: 'Start' } }] }, { say: 'The end.', marks: [] }] });
   assert.deepEqual(b.beats.map((x) => x.say), ['WWII timeline', 'The end.'], "the call's line goes on its first beat");
+
+  // Gemini Live shapes from real logs: kind-wrapped marks ({ frame: {...} }, { connect: {...} }, { flow: {...} }),
+  // inferred kind from diagram fields (nodes/links), and top-level diagram without a beats array.
+  const wrapped = DrawArgs.parse({
+    beats: [
+      { say: 'RAG overview.', marks: [{ frame: { x: 500, y: 400, w: 300, h: 160 } }] },
+      { say: 'Flow step.', marks: [{ connect: { at: { x: 500, y: 500 }, to: { x: 650, y: 650 }, flow: true } }] },
+    ],
+  });
+  assert.deepEqual(wrapped.beats[0].marks[0], { kind: 'frame', at: { x: 500, y: 400, w: 300, h: 160 } });
+  assert.deepEqual(wrapped.beats[1].marks[0], { kind: 'connect', at: { x: 500, y: 500 }, to: { x: 650, y: 650 }, flow: true });
+  assert.deepEqual(checkDraw(wrapped), []);
+
+  const topFlow = DrawArgs.parse({
+    say: 'How RAG works.',
+    title: 'RAG',
+    nodes: [{ id: 'q', text: 'Query', shape: 'round' }, { id: 'a', text: 'Answer', shape: 'round' }],
+    links: [{ from: 'q', to: 'a', flow: true }],
+  });
+  assert.equal(topFlow.beats.length, 1);
+  assert.equal(topFlow.beats[0].marks[0].kind, 'flow');
+  assert.deepEqual(checkDraw(topFlow), []);
+
+  // Regression (log of 2026-11-28 11:21:29): Gemini Live sent type:'flow' at top-level with individual nodes and
+  // type:'connect' edges split across beats[].marks, and the first node missing its id (referenced as 'p1').
+  const splitFlow = DrawArgs.parse({
+    deep: true,
+    type: 'flow',
+    title: 'AI Overview',
+    beats: [
+      { say: 'AI is a', marks: [{ text: 'AI', shape: 'round', tone: 'accent' }] },
+      {
+        say: 'broad field that has various subfields.',
+        marks: [
+          { to: 'p2', from: 'p1', type: 'connect' },
+          { type: 'connect', from: 'p1', to: 'p3' },
+          { to: 'p4', type: 'connect', from: 'p1' },
+          { type: 'connect', from: 'p1', to: 'p5' },
+          { tone: 'sky', id: 'p2', text: 'Machine Learning', shape: 'box' },
+          { id: 'p3', tone: 'sky', text: 'Neural Networks', shape: 'box' },
+          { text: 'Computer Vision', id: 'p4', shape: 'box', tone: 'sky' },
+          { shape: 'box', tone: 'sky', id: 'p5', text: 'Natural Language Processing' },
+        ],
+      },
+    ],
+  });
+  assert.equal(splitFlow.beats.length, 1);
+  assert.equal(splitFlow.beats[0].marks[0].kind, 'flow');
+  assert.equal(splitFlow.beats[0].marks[0].title, 'AI Overview');
+  assert.equal(splitFlow.beats[0].marks[0].nodes.length, 5);
+  assert.equal(splitFlow.beats[0].marks[0].links.length, 4);
+  assert.deepEqual(checkDraw(splitFlow), []);
+
+  // Common voice-model aliases (kind: 'diagram'/'flowchart'/'mind_map', string nodes without links, timeline items).
+  const aliasDiagram = DrawArgs.parse({
+    say: 'How HTTP works.',
+    kind: 'diagram',
+    title: 'HTTP Flow',
+    nodes: ['Browser', 'Server', 'Database'],
+  });
+  assert.equal(aliasDiagram.beats[0].marks[0].kind, 'flow');
+  assert.equal(aliasDiagram.beats[0].marks[0].nodes.length, 3);
+  assert.equal(aliasDiagram.beats[0].marks[0].links.length, 2);
+  assert.deepEqual(checkDraw(aliasDiagram), []);
+
+  const aliasMind = DrawArgs.parse({
+    beats: [{ say: 'AI topics.', marks: [{ kind: 'mind_map', title: 'AI', nodes: [{ label: 'ML', children: ['Supervised'] }, { label: 'NLP' }] }] }],
+  });
+  assert.equal(aliasMind.beats[0].marks[0].kind, 'mindmap');
+  assert.deepEqual(checkDraw(aliasMind), []);
 }

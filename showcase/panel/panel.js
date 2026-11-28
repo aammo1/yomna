@@ -860,7 +860,7 @@
   const SPEAK_ONLINE = 'This language goes to Apple\'s servers. Add it under Dictation in System Settings to keep it on this Mac.';
   function speakPicker(v) {
     const lang = v.lang ?? 'auto';
-    const online = v.langOnline === true || (['ar-SA', 'ar-MA', 'he-IL'].includes(lang) && v.langOnline == null);
+    const online = v.mac && (v.langOnline === true || (['ar-SA', 'ar-MA', 'he-IL'].includes(lang) && v.langOnline == null));
     return el('div', { className: 'reveal', 'data-anim': 'speakin' },
       el('p', { className: 'sub', textContent: 'Speak in' }),
       el('p', { className: 'why wrap', textContent: 'The language you talk to me in.' }),
@@ -884,7 +884,7 @@
         v.download && v.download.status !== 'downloading' ? el('div', { className: 'links' }, link(v.download.status === 'error' ? 'Retry the download' : `Download (${v.download.size})`, () => act('voicedl'), { k: 'voicedl' })) : null,
         micPicker(v),
         v.mac ? toggle('Mute Mac while talking', 'Other sounds go quiet while you talk', v.mute, () => act('mutetalk'), 'mutetalk') : null,
-        v.mac && v.on ? speakPicker(v) : null)
+        (v.on || state.voiceMode === 'live') ? speakPicker(v) : null)
       : group(null, 'When the mic opens without a key.', null,
         toggle('Auto-listen', needs(v.listenEvery ? 'Mic opens after every spoken reply.' : 'Mic opens when I ask you something.'), v.autoListen, () => act('autolisten'), 'autolisten'),
         v.autoListen && v.listenChoices ? el('div', { className: 'reveal', 'data-anim': 'listen-more' },

@@ -4,6 +4,7 @@
 mod act;
 mod atspi;
 mod hyprland;
+mod ocr;
 mod select;
 
 use act::{hands_off_label, parse_key_combo, run_act};
@@ -278,10 +279,12 @@ fn main() {
             out(json!({ "ok": true, "matches": all.into_iter().take(8).collect::<Vec<_>>() }))
         }
         "ocr-find" => {
-            let (Some(_t), Some(_q)) = (arg(1), arg(2)) else {
+            let (Some(t), Some(q)) = (arg(1), arg(2)) else {
                 fail("usage: ocr-find <target> <text> [all]");
             };
-            out(json!({ "ok": true, "matches": [] }))
+            let all = arg(3) == Some("all");
+            let matches = ocr::ocr_find_target(t, q, all);
+            out(json!({ "ok": true, "matches": matches }))
         }
         "refine" => {
             let Some(raw) = arg(1) else {

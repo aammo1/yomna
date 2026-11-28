@@ -8,7 +8,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { parseSipsSize, readProblem, rematch, sameBounds, shotFits, shotMap, shotProblem, shotUnits, snapRect, toScreen } from './pointing.mjs';
 import { ASK, BLOCK, checkDrawAction, checkFetch, checkOpen, checkRead, checkWrite, classifyCommand, isRiskyClick, isYes, riskyKind } from './safety.mjs';
-import { CARDS, DrawArgs, LIMITS, checkDraw, createLists, createParts, createPhotos, describeParts, faviconFor, pickTextMatch, quizNote, resolveTargets, wholeLines } from './draw.mjs';
+import { CARDS, DrawArgs, LIMITS, checkDraw, createLists, createParts, createPhotos, describeParts, faviconFor, pickTextMatch, quizNote, resolveTargets, tidyDraw, wholeLines } from './draw.mjs';
 import { plain } from './intro.mjs';
 import { linuxSession, seesPointer } from './platform.mjs';
 import { addCommitment, forgetFact, getCommitment, parseDue, parseRepeat, repeatLabel, updateCommitment } from './store.mjs';
@@ -194,11 +194,21 @@ function stepFrom(verb, value) {
 export function normalizeActArgs(raw) {
   const a = raw && typeof raw === 'object' ? { ...raw } : {};
   const target = a.target ?? a.app ?? a.window ?? a.application;
-  const decode = (v) => (Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? looseObject(x) ?? x : x)) : typeof v === 'string' ? looseObject(v) ?? v : v);
-  if (a.steps != null) a.steps = typeof a.steps === 'string' && /^\s*\[/.test(a.steps) ? (() => { try { return JSON.parse(a.steps); } catch { return a.steps; } })() : decode(a.steps);
-  if (a.do != null) a.do = decode(a.do);
+  const decodeList = (v) => {
+    if (typeof v === 'string' && /^\s*\[/.test(v)) {
+      try { v = JSON.parse(v); } catch {}
+    }
+    return Array.isArray(v)
+      ? v.map((x) => (typeof x === 'string' ? looseObject(x) ?? x : x))
+      : typeof v === 'string'
+        ? looseObject(v) ?? v
+        : v;
+  };
+  for (const k of ['steps', 'do', 'actions', 'action', 'step', 'commands']) {
+    if (a[k] != null) a[k] = decodeList(a[k]);
+  }
   let steps = Array.isArray(a.steps) && a.steps.length ? a.steps : null;
-  const src = steps ?? a.do ?? a.actions ?? a.action ?? a.step ?? null;
+  const src = steps ?? a.do ?? a.actions ?? a.action ?? a.step ?? a.commands ?? null;
   const out = [];
   const list = Array.isArray(src) ? src : src == null ? [] : [src];
   // A top-level single step: { do: 'click_text', text: 'Save' }.
@@ -209,8 +219,15 @@ export function normalizeActArgs(raw) {
     for (let i = 0; i < list.length; i++) {
       const it = list[i];
       if (it && typeof it === 'object') {
-        const s = typeof it.do === 'string' ? stepFrom(it.do, null) : null;
-        if (s) out.push({ ...it, do: s.do });
+        const verb = typeof it.do === 'string' ? it.do : typeof it.action === 'string' ? it.action : typeof it.type === 'string' ? it.type : null;
+        const s = verb ? stepFrom(verb, null) : null;
+        if (s) {
+          const item = { ...it, do: s.do };
+          if (item.text == null && (s.do === 'type' || s.do === 'fill' || s.do === 'set') && item.value != null) item.text = String(item.value);
+          if (item.text == null && s.do === 'click_text' && (item.label != null || item.target != null)) item.text = String(item.label ?? item.target);
+          if (item.field == null && (s.do === 'fill' || s.do === 'choose' || s.do === 'set') && (item.label != null || item.name != null)) item.field = String(item.label ?? item.name);
+          out.push(item);
+        }
         continue;
       }
       const str = String(it ?? '').trim();
@@ -373,9 +390,13 @@ const STALE_ID = 'The page changed since read_window, so that id is out of date.
 // up to 6 s for its window. True when it's there. Only plain app names, never paths or links.
 async function launchApp(name, hands) {
   const n = String(name).trim();
-  if (!['darwin', 'win32'].includes(process.platform) || !n || /[/\\:]/.test(n) || checkOpen(n, HOME).level === BLOCK) return false;
+  if (!['darwin', 'win32', 'linux'].includes(process.platform) || !n || /[/\\:]/.test(n) || checkOpen(n, HOME).level === BLOCK) return false;
   // Opened only to act in it: in background mode (the default) it opens behind the user's app, not in front (macOS).
-  const r = process.platform === 'win32' ? await winOpen(n) : await run('open', [...(process.env.YOMNA_BG !== '0' ? ['-g'] : []), '-a', n]);
+  const r = process.platform === 'linux'
+    ? await openLinuxApp(n)
+    : process.platform === 'win32'
+      ? await winOpen(n)
+      : await run('open', [...(process.env.YOMNA_BG !== '0' ? ['-g'] : []), '-a', n]);
   if (r.err && /Unable to find application/i.test(r.stderr)) throw new Error(`There's no app called "${n}" on ${THIS_COMPUTER} (not installed, or it has another name). Don't look for it another way; say so and carry on with the rest.`);
   if (r.err) return false;
   for (let i = 0; i < 30; i++) {
@@ -622,7 +643,11 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
     // Acting in an app may take the real cursor: meanwhile clicks go through the overlay, even where the Sidekick or
     // its bubble sits on the spot being clicked.
     const acting = args[0] === 'act';
-    if (acting) ui({ kind: 'hands', on: true });
+    if (acting) {
+      ui({ kind: 'hands', on: true });
+      // Linux compositors (Hyprland) unmap the overlay asynchronously on the GTK main thread; wait briefly so clicks never hit it.
+      if (LINUX) await new Promise((r) => setTimeout(r, 60));
+    }
     // While it acts, the Sidekick hops to where each step lands. Only the spot is passed on, never what is typed.
     const onLine = acting ? (line) => {
       if (line[0] !== '@') return;
@@ -647,7 +672,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
     return res;
   }
   async function readWindow(target = 'front') {
-    const t = String(target || 'front');
+    const raw = String(target || 'front').trim();
+    const t = raw === 'screen' ? 'front' : raw;
     const read = () => Promise.all([hands('ui', t === 'front' ? 'front' : `app:${t}`), hands('windows').catch(() => null)]);
     const [res, all] = await read().catch(async (err) => {
       if (t === 'front' || !/No matching window/.test(String(err?.message ?? err)) || !(await launchApp(t, hands))) throw err;
@@ -1194,7 +1220,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
             return `${r} (went straight to the address instead of typing it)`;
           }
           // Stay on the exact window read for this request: an app can have several, and keystrokes must land in this one.
-          const sameApp = lastRead?.turn === turn && (asked === 'front' || (lastRead.app ?? '').toLowerCase().includes(asked.toLowerCase()) || (asked.toLowerCase() === 'browser'));
+          const isBrowserApp = /safari|chrome|chromium|firefox|zen|brave|edge|arc|opera|vivaldi|helium|librewolf|browser/i.test(lastRead?.app ?? '');
+          const sameApp = lastRead?.turn === turn && (asked === 'front' || (lastRead.app ?? '').toLowerCase().includes(asked.toLowerCase()) || (asked.toLowerCase() === 'browser' && isBrowserApp));
           const t = sameApp ? `window:${lastRead.win}` : asked;
           // Ids up to the first click come from read_window; after a click the helper re-reads the page itself.
           const firstClick = steps.findIndex((s) => s.do === 'click' || s.do === 'click_text');
@@ -1231,7 +1258,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
             }
             delete s.label;
           }
-          const plan = { steps: mapped, ...(t === 'front' ? {} : t.startsWith('window:') ? { window: +t.slice(7) } : { app: t }) };
+          const winId = t.startsWith('window:') ? (/^0x/i.test(t.slice(7)) ? t.slice(7) : +t.slice(7)) : null;
+          const plan = { steps: mapped, ...(t === 'front' ? {} : winId != null ? { window: winId } : { app: t }) };
           const act = () => runAct(plan, ctx);
           let res;
           try {
@@ -1243,7 +1271,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
               // The window read earlier closed (a date picker or popup): use the app's front window instead.
               if (!plan.window || !/No matching window/.test(String(err?.message ?? err))) throw err;
               delete plan.window;
-              if (asked !== 'front' && lastRead?.app) plan.app = lastRead.app;
+              if (asked !== 'front' && lastRead?.app) plan.app = asked.toLowerCase() === 'browser' ? 'browser' : lastRead.app;
               res = await act();
             }
           } finally {
@@ -1281,6 +1309,8 @@ Deep explanations: when they want to really understand something ("explain gene 
 Actions: type (text into the field at; needs actions allowed), copy (text to the clipboard), open (url), handoff (task), button (text + action {do: ask|open|copy, value}: a likely next step they can click), emote (name: hype, wave, upset, remind, motivate), sfx (name). tone: accent, teal, amber, coral, lilac, sky, lime, red, white.
 A drawing stays until the user clears it or the window changes; your next drawing replaces it, unless you set keep: true, which keeps the cards already up (marks on the screen still go): use it whenever they ask to keep what's there, or the new drawing adds to it. At most ${LIMITS.cardsShown} cards show at once (one more closes the oldest), so make a point with the fewest cards. Every drawn piece gets an id (p1, p2 …) in the result. To change what's drawn ("make that red", "move it left", "never mind"): edit [{do: recolor|move|erase|clear, part, tone, dx, dy}] with no beats. Up to 12 beats, 40 marks each.${POINTER_OK ? '' : " On this desktop (Wayland) clicks and hovers in other apps can't be seen: never use wait; beats play one after another, so say each step's line in an order that reads well without pausing."}`,
       parameters: DrawArgs, executionMode: 'sequential', timeoutMs: 30 * 60_000,
+      normalize: tidyDraw,
+      example: '{"beats": [{"say": "How RAG works.", "marks": [{"kind": "flow", "title": "RAG", "nodes": [{"id": "q", "text": "Query", "shape": "round"}, {"id": "r", "text": "Retrieve"}, {"id": "a", "text": "Answer", "shape": "round"}], "links": [{"from": "q", "to": "r", "flow": true}, {"from": "r", "to": "a", "flow": true}]}]}]}',
       execute: draw,
     },
     {

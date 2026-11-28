@@ -282,13 +282,25 @@ pub fn capture_target(out_path: &str, target: &str, max_dim: Option<u32>) -> Res
             }),
         )
     } else {
-        let w = resolve(target).ok_or_else(|| no_window(target))?;
+        let mut w = resolve(target).ok_or_else(|| no_window(target))?;
         if !w.focused && target != "front" {
             let _ = focus_window(&w);
+            if let Some(nw) = resolve(target) {
+                w = nw;
+            }
         }
-        let g = (w.bounds.x, w.bounds.y, w.bounds.w, w.bounds.h);
+        let sb = screen_bounds();
+        let x0 = w.bounds.x.max(sb.x);
+        let y0 = w.bounds.y.max(sb.y);
+        let x1 = (w.bounds.x + w.bounds.w).min(sb.x + sb.w);
+        let y1 = (w.bounds.y + w.bounds.h).min(sb.y + sb.h);
+        let geom = if x1 > x0 && y1 > y0 {
+            Some((x0, y0, x1 - x0, y1 - y0))
+        } else {
+            None
+        };
         (
-            Some(g),
+            geom,
             json!({
                 "ok": true,
                 "file": out_path,

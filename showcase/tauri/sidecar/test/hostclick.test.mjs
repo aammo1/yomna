@@ -51,3 +51,45 @@ console.log('host click-through tests: passed');
   assert.ok(!calls.some(([c, a]) => c === 'sidecar_send' && a.msg.id === 'stop'));
   console.log('host hide-stops-voice tests: passed');
 }
+
+// Regression (Linux Wayland): while acting in another app (handsBusy), the overlay must clear its input shape to []
+// so the hopping Sidekick creature never intercepts ydotool clicks on the target button.
+{
+  const lCalls = [], lTimers = [];
+  const hand = { begin: noop, at: noop, end: noop };
+  const lAgent = { visible: true, hide: noop, show: () => false, act: noop, setAuto: noop, hand };
+  const lWin = {
+    __TAURI__: { core: { invoke: (cmd, args) => { lCalls.push([cmd, args]); return Promise.resolve(true); } } },
+    YOMNA_LINUX: 'wayland',
+    Jarvis: {
+      ptr: () => false,
+      hitTest: () => true,
+      hitBox: () => [200, 300, 120, 120],
+      hitRects: () => [200, 300, 120, 120],
+      tiles: [{ creature: { agent: lAgent } }],
+    },
+  };
+  const lCtx = {
+    window: lWin, Jarvis: lWin.Jarvis, navigator: { platform: 'Linux x86_64' }, performance, Math, JSON, Promise, Set, Map, Array, Object, String, Number, RegExp, Date,
+    document: { createElement: el, addEventListener: noop, body: el(), hidden: false },
+    addEventListener: noop, setTimeout: noop, clearTimeout: noop, clearInterval: noop, setInterval: (f, ms) => { lTimers.push([f, ms]); return lTimers.length; },
+    matchMedia: () => ({ matches: false, addEventListener: noop }), requestAnimationFrame: noop, innerWidth: 1536, innerHeight: 864,
+  };
+  vm.runInNewContext(fs.readFileSync(new URL('../../../jarvis/host.js', import.meta.url), 'utf8'), lCtx);
+  const hitCalls = () => lCalls.filter(([c]) => c === 'set_hit_rects').map(([, a]) => Array.from(a.rects));
+  const lTick = () => lTimers.filter(([, ms]) => ms <= 200).forEach(([f]) => f());
+
+  lTick();
+  assert.deepEqual(hitCalls().at(-1), [200, 300, 120, 120], 'idle overlay advertises its hit rect');
+
+  lWin.__jarvisHost({ kind: 'hands', on: true });
+  assert.deepEqual(hitCalls().at(-1), [], 'hands on: input shape clears immediately so clicks pass through');
+
+  lWin.__jarvisHost({ kind: 'hands', step: { bounds: [240, 340, 40, 24] } });
+  lTick();
+  assert.deepEqual(hitCalls().at(-1), [], 'while stepping, the hopping creature stays 100% click-through');
+
+  lWin.__jarvisHost({ kind: 'hands', on: false });
+  assert.deepEqual(hitCalls().at(-1), [200, 300, 120, 120], 'hands off: overlay restores its hit rect');
+  console.log('host linux hands click-through tests: passed');
+}

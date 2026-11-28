@@ -10,14 +10,20 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
+import { DrawArgs } from './draw.mjs';
 import { BLOCK, checkDrawAction, isRiskyClick, isYes, redactArgs, riskyKind } from './safety.mjs';
 
 export const MCP_PROTOCOL_VERSION = '2024-11-05';
 export const SERVER_INFO = { name: 'yomna-desktop', version: '1.0.0' };
 export const ACTIONS_OFF_ERROR = 'Allow Actions is off in Yomna Settings. Turn it on to let Yomna click or type inside apps.';
 
-const TONES = ['accent', 'teal', 'amber', 'coral', 'lilac', 'sky', 'lime', 'red', 'white'];
 const STEP_ACTIONS = ['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait', 'read_window', 'take_screenshot', 'screenshot'];
+
+const DRAW_INPUT_SCHEMA = (() => {
+  const { $schema: _s, ...schema } = z.toJSONSchema(DrawArgs, { unrepresentable: 'any' });
+  return schema;
+})();
 
 /** Tool definitions exposed by the yomna-desktop MCP server. */
 export const DESKTOP_TOOLS = [
@@ -51,70 +57,8 @@ export const DESKTOP_TOOLS = [
   },
   {
     name: 'draw',
-    description: 'Render circles, arrows, spotlights, flowcharts, math, chemistry, maps, 3D models, and interactive cards on Yomna’s overlay canvas.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        target: { type: 'string', description: "Target window or 'front' / 'screen'." },
-        beats: {
-          type: 'array',
-          maxItems: 12,
-          items: {
-            type: 'object',
-            properties: {
-              say: { type: 'string', maxLength: 240 },
-              wait: { type: 'string', enum: ['click', 'hover'] },
-              marks: {
-                type: 'array',
-                maxItems: 40,
-                items: {
-                  type: 'object',
-                  properties: {
-                    kind: { type: 'string' },
-                    tone: { type: 'string', enum: TONES },
-                    at: { type: 'object' },
-                    to: { type: 'object' },
-                    tie: { type: 'object' },
-                    text: { type: 'string' },
-                    label: { type: 'string' },
-                    title: { type: 'string' },
-                    heading: { type: 'string' },
-                    items: { type: 'array', items: { type: 'string' } },
-                    action: {
-                      type: 'object',
-                      properties: {
-                        do: { type: 'string', enum: ['ask', 'open', 'copy'] },
-                        value: { type: 'string' },
-                      },
-                    },
-                  },
-                  required: ['kind'],
-                },
-              },
-            },
-            required: ['marks'],
-          },
-        },
-        edit: {
-          type: 'array',
-          maxItems: 20,
-          items: {
-            type: 'object',
-            properties: {
-              do: { type: 'string', enum: ['recolor', 'move', 'erase', 'clear'] },
-              part: { type: 'string' },
-              tone: { type: 'string', enum: TONES },
-              dx: { type: 'number' },
-              dy: { type: 'number' },
-            },
-            required: ['do'],
-          },
-        },
-        deep: { type: 'boolean' },
-        keep: { type: 'boolean' },
-      },
-      additionalProperties: false,
-    },
+    description: "Render visual diagrams, cards, and screen annotations on Yomna's overlay canvas. Pass beats: [{ say, marks: [{ kind, ... }] }]. Diagram card kinds (no screenshot needed): flow (nodes [{id, text, shape: box|round|diamond, tone}], links [{from, to, label, flow}], dir: down|right, animate), graph (title, x_range, y_range, plots [{points: [[x,y]], tone, label}], dots), timeline (title, events [{when, text}]), molecule (smiles, label), model (title, parts [{shape: box|sphere|cylinder|cone|torus, at, size, rot, tone, label, motion}]), mindmap (title, branches [{text, items, tone}]), table (title, columns, rows), bars (title, bars [{label, value, tone}], unit), math (title, steps [{tex, note}]), geometry (vertices, lines, angles, circles), map (region, shade, pins, routes), quiz (title, questions), card (title, heading, text, items, sources), list (title, items), note (text, tone). Screen marks: ring, target, frame, point, arrow, connect, spotlight, label, write.",
+    inputSchema: DRAW_INPUT_SCHEMA,
   },
   {
     name: 'list_windows',
@@ -390,9 +334,13 @@ export function createDesktopMcpDispatcher(handlers = {}) {
     const args = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) ? rawArgs : {};
     handlers.onToolCall?.({ name, args: redactArgs(name, args) });
 
+    let parsedArgs = args;
     if (name === 'draw') {
       try {
-        validateDrawSafety(args, isAllowActions());
+        // Only normalize through DrawArgs when beats/edit or mark fields look like a real draw call; keep custom mock shapes working.
+        const parsed = DrawArgs.safeParse(args);
+        if (parsed.success) parsedArgs = parsed.data;
+        validateDrawSafety(parsedArgs, isAllowActions());
       } catch (err) {
         return { content: [{ type: 'text', text: err?.message || String(err) }], isError: true };
       }
@@ -463,7 +411,7 @@ export function createDesktopMcpDispatcher(handlers = {}) {
       return { content: [{ type: 'text', text: `Tool ${name} is not available right now.` }], isError: true };
     }
     try {
-      return toMcpResult(await fn(args));
+      return toMcpResult(await fn(parsedArgs));
     } catch (err) {
       return { content: [{ type: 'text', text: err?.message || String(err) }], isError: true };
     }

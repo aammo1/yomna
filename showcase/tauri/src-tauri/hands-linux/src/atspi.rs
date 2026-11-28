@@ -1,13 +1,14 @@
 //! Lightweight AT-SPI2 reader via `zbus` (`org.a11y.Bus`).
 //! Gracefully returns an unavailable/empty result when accessibility is disabled or unexposed.
 
-use crate::hyprland::{Rect, Win};
+use crate::hyprland::{monitor_scale_at, Rect, Win};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 use zbus::OwnedObjectPath;
 use zbus::{Connection, Proxy};
 
 // AT-SPI2 state bit indices (from atspi-constants.h)
+const STATE_DEFUNCT: u32 = 5;
 const STATE_FOCUSED: u32 = 12;
 const STATE_SHOWING: u32 = 25;
 const STATE_VISIBLE: u32 = 28;
@@ -73,10 +74,10 @@ fn has_state(states: &[u32], bit: u32) -> bool {
 
 fn map_role(role_name: &str) -> Option<&'static str> {
     Some(match role_name.trim().to_ascii_lowercase().as_str() {
-        "push button" | "toggle button" => "button",
+        "button" | "push button" | "toggle button" | "menu button" | "split button" => "button",
         "check box" | "check menu item" => "checkbox",
         "radio button" | "radio menu item" => "radio",
-        "text" | "entry" | "document text" => "text field",
+        "text" | "entry" | "document text" | "autocomplete" | "search" => "text field",
         "password text" => "password field",
         "combo box" => "combo box",
         "menu item" => "menu item",
@@ -84,7 +85,7 @@ fn map_role(role_name: &str) -> Option<&'static str> {
         "page tab" => "tab",
         "slider" => "slider",
         "spin button" => "stepper",
-        "list item" => "list item",
+        "list item" | "icon" | "table cell" | "list box item" => "list item",
         "tree item" => "tree item",
         _ => return None,
     })
@@ -140,11 +141,15 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
         .map_err(|e| e.to_string())?;
     let addr: String = a11y_bus.call("GetAddress", &()).await.map_err(|e| e.to_string())?;
     // Accessibility is off by default on Hyprland/Omarchy (nothing like a screen reader turns it on), and with it off
-    // apps register empty or not at all, so read_window found no controls anywhere. Turning it on is what a screen
-    // reader does; apps started from now on (and Qt/GTK ones already open) fill in their controls.
+    // apps register empty or not at all, so read_window found no controls anywhere. Turning both IsEnabled and
+    // ScreenReaderEnabled on is what a screen reader does; Chromium/Chrome/Electron specifically watch
+    // ScreenReaderEnabled to expose web page controls dynamically.
     if let Ok(status) = Proxy::new(&session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status").await {
         if !status.get_property::<bool>("IsEnabled").await.unwrap_or(false) {
             let _ = status.set_property("IsEnabled", true).await;
+        }
+        if !status.get_property::<bool>("ScreenReaderEnabled").await.unwrap_or(false) {
+            let _ = status.set_property("ScreenReaderEnabled", true).await;
         }
     }
     if addr.trim().is_empty() {
@@ -203,17 +208,28 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
 }
 
 async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path: String) -> UiTree {
-    let deadline = Instant::now() + Duration::from_millis(1200);
+    // Browsers: the page is a "document web" deep inside (often 20+ levels) after the browser's own bar and tabs, which
+    // used to eat the whole budget, so web pages showed nothing. The page is read first, hidden parts (background
+    // tabs, closed menus) are skipped, and the costly calls (position, text) are made only where they're needed.
+    let deadline = Instant::now() + Duration::from_millis(3500);
     let mut tree = UiTree {
         controls: Vec::new(),
         texts: Vec::new(),
         note: "",
     };
     let mut visited = 0usize;
-    let mut stack: Vec<(String, String, usize)> = vec![(app_bus, app_path, 0)];
+    // (bus, path, depth, inside the page)
+    let mut page: Vec<(String, String, usize, bool)> = Vec::new();
+    let mut rest: Vec<(String, String, usize, bool)> = vec![(app_bus, app_path, 0, false)];
 
-    while let Some((bus, path, depth)) = stack.pop() {
-        if Instant::now() >= deadline || visited >= 450 || tree.controls.len() >= 220 {
+    let mon_scale = monitor_scale_at(win.bounds.mid_x(), win.bounds.mid_y());
+    // Detected per-window scale divisor: 1.0 when the app reports logical pixels, or `mon_scale` when a toolkit
+    // (GTK/Chromium/Firefox on fractional Wayland scaling) reports physical pixels in GetExtents.
+    let mut coord_scale: f64 = 1.0;
+    let mut scale_detected = mon_scale <= 1.01 || win.bounds.is_empty();
+
+    while let Some((bus, path, depth, in_page)) = page.pop().or_else(|| rest.pop()) {
+        if Instant::now() >= deadline || visited >= 4000 || tree.controls.len() >= 400 {
             break;
         }
         visited += 1;
@@ -221,41 +237,71 @@ async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path:
             continue;
         };
         let role_name: String = acc.call("GetRoleName", &()).await.unwrap_or_default();
-        let name: String = prop_str(conn, bus.as_str(), path.as_str(), "Name").await;
-        let desc: String = prop_str(conn, bus.as_str(), path.as_str(), "Description").await;
+        let role_low = role_name.trim().to_ascii_lowercase();
         let states: Vec<u32> = acc.call("GetState", &()).await.unwrap_or_default();
-        let ifaces: Vec<String> = acc.call("GetInterfaces", &()).await.unwrap_or_default();
-
+        if has_state(&states, STATE_DEFUNCT) {
+            continue;
+        }
         let showing = has_state(&states, STATE_SHOWING) || has_state(&states, STATE_VISIBLE);
-        let focused = has_state(&states, STATE_FOCUSED);
-
-        let mut bounds = Rect::default();
-        if ifaces.iter().any(|i| i == "org.a11y.atspi.Component") {
+        // Hidden below the window itself: a background tab's page, a closed menu. Nothing in it can be clicked.
+        // Shallow GTK4/Qt layout containers sometimes omit STATE_SHOWING on wrapper panes even when children show.
+        let wrapper_container = depth <= 6
+            && matches!(
+                role_low.as_str(),
+                "application" | "frame" | "filler" | "panel" | "scroll pane" | "viewport" | "layered pane" | "root pane"
+            );
+        if !showing && depth > 2 && !wrapper_container {
+            continue;
+        }
+        // Detect physical vs logical GetExtents from the top-level frame size.
+        if !scale_detected && role_low == "frame" {
             if let Ok(comp) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Component").await {
-                // Window-relative (coord type 1), placed by the window's own position: on Wayland an app can't know
-                // where it is on screen, so its "screen" coordinates are really window ones.
-                if let Ok((x, y, w, h)) = comp.call::<_, _, (i32, i32, i32, i32)>("GetExtents", &(1u32,)).await {
-                    bounds = Rect::new(x + win.bounds.x, y + win.bounds.y, w, h);
+                if let Ok((_, _, fw, fh)) = comp.call::<_, _, (i32, i32, i32, i32)>("GetExtents", &(1u32,)).await {
+                    if fw > 0 && fh > 0 {
+                        let rx = fw as f64 / win.bounds.w as f64;
+                        let ry = fh as f64 / win.bounds.h as f64;
+                        if (rx - mon_scale).abs() < 0.15 && (ry - mon_scale).abs() < 0.15 {
+                            coord_scale = mon_scale;
+                        }
+                        scale_detected = true;
+                    }
                 }
             }
         }
+        let focused = has_state(&states, STATE_FOCUSED);
+        let role = map_role(&role_name);
+        let mut name: String = prop_str(conn, bus.as_str(), path.as_str(), "Name").await;
+        if name.trim().is_empty() && role.is_some() {
+            name = prop_str(conn, bus.as_str(), path.as_str(), "Description").await;
+        }
+        let label = name.trim().to_string();
 
-        let mut value = String::new();
-        if ifaces.iter().any(|i| i == "org.a11y.atspi.Text") {
-            if let Ok(txt) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Text").await {
-                if let Ok(t) = txt.call::<_, _, String>("GetText", &(0i32, -1i32)).await {
-                    value = t.trim().chars().take(160).collect();
+        if let Some(role) = role {
+            let ifaces: Vec<String> = acc.call("GetInterfaces", &()).await.unwrap_or_default();
+            let mut bounds = Rect::default();
+            if ifaces.iter().any(|i| i == "org.a11y.atspi.Component") {
+                if let Ok(comp) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Component").await {
+                    // Window-relative (coord type 1), placed by the window's own position: on Wayland an app can't
+                    // know where it is on screen, so its "screen" coordinates are really window ones.
+                    if let Ok((x, y, w, h)) = comp.call::<_, _, (i32, i32, i32, i32)>("GetExtents", &(1u32,)).await {
+                        if w > 0 && h > 0 {
+                            let sx = (x as f64 / coord_scale).round() as i32;
+                            let sy = (y as f64 / coord_scale).round() as i32;
+                            let sw = (w as f64 / coord_scale).round() as i32;
+                            let sh = (h as f64 / coord_scale).round() as i32;
+                            bounds = Rect::new(sx + win.bounds.x, sy + win.bounds.y, sw, sh);
+                        }
+                    }
                 }
             }
-        }
-
-        let label = if !name.trim().is_empty() {
-            name.trim().to_string()
-        } else {
-            desc.trim().to_string()
-        };
-
-        if let Some(role) = map_role(&role_name) {
+            let mut value = String::new();
+            if role == "text field" || role == "combo box" {
+                if let Ok(txt) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Text").await {
+                    if let Ok(t) = txt.call::<_, _, String>("GetText", &(0i32, -1i32)).await {
+                        value = t.trim().chars().take(160).collect();
+                    }
+                }
+            }
             if !bounds.is_empty() || !label.is_empty() {
                 let id = tree.controls.len() + 1;
                 let offscreen = !showing
@@ -265,8 +311,8 @@ async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path:
                 tree.controls.push(UiControl {
                     id,
                     role: role.to_string(),
-                    label: label.clone(),
-                    value: if role == "password field" { String::new() } else { value.clone() },
+                    label,
+                    value: if role == "password field" { String::new() } else { value },
                     focused,
                     offscreen,
                     bounds,
@@ -274,17 +320,17 @@ async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path:
                     actionable: ifaces.iter().any(|i| i == "org.a11y.atspi.Action"),
                 });
             }
-        } else if showing && !label.is_empty() && tree.texts.len() < 120 {
-            if !tree.texts.contains(&label) {
-                tree.texts.push(label);
-            }
+        } else if showing && !label.is_empty() && tree.texts.len() < 160 && !tree.texts.contains(&label) {
+            tree.texts.push(label);
         }
 
-        if depth < 10 {
+        if depth < 60 {
+            let into_page = in_page || role_name.to_ascii_lowercase().starts_with("document");
             if let Ok(children) = acc.call::<_, _, Vec<(String, OwnedObjectPath)>>("GetChildren", &()).await {
-                for (cbus, cpath) in children.into_iter().rev().take(60) {
+                let to = if into_page { &mut page } else { &mut rest };
+                for (cbus, cpath) in children.into_iter().take(300).rev() {
                     if !cbus.is_empty() {
-                        stack.push((cbus, cpath.to_string(), depth + 1));
+                        to.push((cbus, cpath.to_string(), depth + 1, into_page));
                     }
                 }
             }

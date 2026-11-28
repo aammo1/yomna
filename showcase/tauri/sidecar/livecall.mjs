@@ -272,6 +272,8 @@ export function createLiveCall({ makeBrain, ui, send, ask, toClassic, anim = () 
     holdDraw(m) {
       if (!brain || m?.kind !== 'agent' || m.e?.type !== 'draw') return false;
       const { id, seg } = m.e;
+      // Background CLI harness draws over MCP have their own id prefix and should render immediately.
+      if (String(id ?? '').startsWith('mcp-')) return false;
       if (!held.has(id)) held.set(id, { segs: [], answered: false, timer: null });
       held.get(id).segs.push(m);
       holdTimer(id);

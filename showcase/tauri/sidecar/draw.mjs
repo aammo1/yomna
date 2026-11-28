@@ -78,27 +78,213 @@ const Mark = z.object({
 // Some models (Gemini Flash-Lite, #81) put a lone mark's fields on its beat or on the call itself instead of in marks,
 // a button's text as label, a card's heading as title: moved where they go before the schema sees them.
 const BEAT_KEYS = new Set(['say', 'marks', 'wait']), CALL_KEYS = new Set(['target', 'beats', 'edit', 'deep', 'keep']);
+const KIND_SET = new Set(KINDS), SCREEN_SET = new Set(SCREEN);
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const loose = (o, keep) => Object.fromEntries(Object.entries(o).filter(([k]) => !keep.has(k)));
-function tidyMark(m) {
+const maybeParseJson = (v) => {
+  if (typeof v !== 'string') return v;
+  const s = v.trim();
+  if (!((s.startsWith('[') && s.endsWith(']')) || (s.startsWith('{') && s.endsWith('}')))) return v;
+  try { return JSON.parse(s); } catch { return v; }
+};
+const KIND_ALIASES = {
+  diagram: 'flow', flowchart: 'flow', flow_chart: 'flow', process: 'flow', workflow: 'flow', architecture: 'flow', tree: 'flow', pipeline: 'flow',
+  mind_map: 'mindmap', 'mind-map': 'mindmap', 'mind map': 'mindmap', concept_map: 'mindmap',
+  bar: 'bars', bar_chart: 'bars', barchart: 'bars', 'bar chart': 'bars', chart: 'bars',
+  line_graph: 'graph', line_chart: 'graph', plot: 'graph', curve_graph: 'graph',
+  '3d': 'model', '3d_model': 'model', '3d model': 'model', model3d: 'model',
+  chem: 'molecule', chemical: 'molecule',
+  equation: 'math', formula: 'math',
+  grid: 'table', comparison: 'table',
+  checklist: 'list', todo: 'list', todos: 'list',
+};
+const resolveKind = (k) => {
+  if (typeof k !== 'string') return null;
+  const low = k.trim().toLowerCase();
+  if (KIND_SET.has(low)) return low;
+  return KIND_ALIASES[low] ?? null;
+};
+function inferKind(m) {
+  if (Array.isArray(m.nodes) || Array.isArray(m.edges)) return 'flow';
+  if (Array.isArray(m.plots) || Array.isArray(m.dots)) return 'graph';
+  if (Array.isArray(m.events)) return 'timeline';
+  if (typeof m.smiles === 'string') return 'molecule';
+  if (Array.isArray(m.parts)) return 'model';
+  if (Array.isArray(m.bars)) return 'bars';
+  if (Array.isArray(m.columns) && Array.isArray(m.rows)) return 'table';
+  if (Array.isArray(m.branches)) return 'mindmap';
+  if (Array.isArray(m.questions)) return 'quiz';
+  if (Array.isArray(m.steps)) return 'math';
+  if (Array.isArray(m.vertices)) return 'geometry';
+  if (typeof m.region === 'string' || Array.isArray(m.shade) || Array.isArray(m.pins)) return 'map';
+  return null;
+}
+function tidyFlowMark(m) {
+  const rawNodes = Array.isArray(m.nodes) ? m.nodes : [];
+  const rawLinks = Array.isArray(m.links) ? m.links : Array.isArray(m.edges) ? m.edges : Array.isArray(m.connections) ? m.connections : [];
+  const used = new Set(rawNodes.map((n) => (isObj(n) && n.id != null ? String(n.id).trim() : '')).filter(Boolean));
+  let seq = 1;
+  const nextId = () => { while (used.has(`p${seq}`)) seq++; const id = `p${seq++}`; used.add(id); return id; };
+  const nodes = rawNodes.filter((n) => isObj(n) || typeof n === 'string').slice(0, LIMITS.nodes).map((n) => {
+    if (typeof n === 'string') {
+      const id = nextId();
+      return { id, text: n.trim().slice(0, 60) || id };
+    }
+    const id = n.id != null && String(n.id).trim() ? String(n.id).trim().slice(0, 16) : nextId();
+    const text = String(n.text ?? n.label ?? n.title ?? n.name ?? id).trim().slice(0, 60) || id;
+    const shape = NODE_SHAPES.includes(n.shape) ? n.shape : undefined;
+    const tone = TONES.includes(n.tone) ? n.tone : undefined;
+    return { id, text, ...(shape ? { shape } : {}), ...(tone ? { tone } : {}) };
+  });
+  const ids = new Set(nodes.map((n) => n.id));
+  let links = rawLinks.filter(isObj).slice(0, LIMITS.links).map((l) => ({
+    from: String(l.from ?? l.source ?? '').trim().slice(0, 16),
+    to: String(l.to ?? l.target ?? '').trim().slice(0, 16),
+    ...(typeof l.label === 'string' && l.label.trim() ? { label: l.label.trim().slice(0, 30) } : {}),
+    ...(typeof l.flow === 'boolean' ? { flow: l.flow } : {}),
+  })).filter((l) => l.from && l.to && l.from !== l.to && ids.has(l.from) && ids.has(l.to));
+  if (!links.length && nodes.length >= 2) {
+    links = nodes.slice(0, -1).map((n, i) => ({ from: n.id, to: nodes[i + 1].id, flow: true }));
+  }
+  const { edges: _e, connections: _c, type: _t, ...rest } = m;
+  if (typeof rest.title === 'string') rest.title = rest.title.trim().slice(0, 60);
+  return { ...rest, kind: 'flow', nodes, links };
+}
+function tidyMark(raw) {
+  let m = maybeParseJson(raw);
   if (!isObj(m)) return m;
+  // Normalize kind aliases and `type` instead of `kind`, or wrapped marks like { flow: { nodes, links } }.
+  if (typeof m.kind === 'string') {
+    const mapped = resolveKind(m.kind);
+    if (mapped && mapped !== m.kind) m = { ...m, kind: mapped };
+  }
+  if (!m.kind && typeof m.type === 'string') {
+    const mapped = resolveKind(m.type);
+    if (mapped) {
+      const { type: _t, ...rest } = m;
+      m = { kind: mapped, ...rest };
+    }
+  }
+  if (!m.kind) {
+    const wrapped = Object.keys(m).find((k) => resolveKind(k) && isObj(m[k]));
+    if (wrapped) {
+      const { [wrapped]: inner, ...rest } = m;
+      m = { kind: resolveKind(wrapped), ...rest, ...inner };
+    } else {
+      const guessed = inferKind(m);
+      if (guessed) m = { kind: guessed, ...m };
+    }
+  }
+  if (typeof m.title === 'string' && m.title.length > 60) m = { ...m, title: m.title.slice(0, 60) };
+  if (typeof m.label === 'string' && m.label.length > 40) m = { ...m, label: m.label.slice(0, 40) };
+  // Direct x/y/w/h on a screen mark instead of inside at: { x, y, w, h }.
+  if (SCREEN_SET.has(m.kind) && !m.at && m.x != null && m.y != null) {
+    const { x, y, w, h, ...rest } = m;
+    m = { ...rest, at: { x, y, ...(w != null ? { w } : {}), ...(h != null ? { h } : {}) } };
+  }
+  if (m.kind === 'flow') return tidyFlowMark(m);
+  if (m.kind === 'mindmap') {
+    const rawB = Array.isArray(m.branches) ? m.branches : Array.isArray(m.nodes) ? m.nodes : Array.isArray(m.children) ? m.children : null;
+    if (rawB && (!Array.isArray(m.branches) || rawB.some((b) => typeof b === 'string' || (isObj(b) && !b.text)))) {
+      const branches = rawB.slice(0, 8).map((b) => {
+        if (typeof b === 'string') return { text: b.trim().slice(0, 60) || 'Item' };
+        if (!isObj(b)) return null;
+        const text = String(b.text ?? b.label ?? b.title ?? b.name ?? '').trim().slice(0, 60);
+        if (!text) return null;
+        const items = Array.isArray(b.items ?? b.children) ? (b.items ?? b.children).map((x) => String(isObj(x) ? (x.text ?? x.label ?? '') : x).trim().slice(0, 60)).filter(Boolean).slice(0, 6) : undefined;
+        const tone = TONES.includes(b.tone) ? b.tone : undefined;
+        return { text, ...(items?.length ? { items } : {}), ...(tone ? { tone } : {}) };
+      }).filter(Boolean);
+      const { nodes: _n, children: _ch, ...rest } = m;
+      return { ...rest, branches };
+    }
+  }
+  if (m.kind === 'timeline') {
+    const rawE = Array.isArray(m.events) ? m.events : Array.isArray(m.items) ? m.items : null;
+    if (rawE && (!Array.isArray(m.events) || rawE.some((e) => isObj(e) && (!e.when || !e.text)))) {
+      const events = rawE.filter(isObj).slice(0, 10).map((e) => ({
+        when: String(e.when ?? e.date ?? e.year ?? e.time ?? '').trim().slice(0, 16) || 'Step',
+        text: String(e.text ?? e.label ?? e.title ?? e.description ?? '').trim().slice(0, 60) || 'Event',
+      }));
+      const { items: _i, ...rest } = m;
+      return { ...rest, events };
+    }
+  }
+  if (m.kind === 'bars') {
+    const rawBars = Array.isArray(m.bars) ? m.bars : Array.isArray(m.data) ? m.data : Array.isArray(m.items) ? m.items : null;
+    if (rawBars && (!Array.isArray(m.bars) || rawBars.some((b) => isObj(b) && (!b.label || typeof b.value !== 'number')))) {
+      const bars = rawBars.filter(isObj).slice(0, LIMITS.bars).map((b) => ({
+        label: String(b.label ?? b.name ?? b.text ?? '').trim().slice(0, 30) || 'Item',
+        value: Number(b.value ?? b.count ?? b.amount ?? 0),
+        ...(TONES.includes(b.tone) ? { tone: b.tone } : {}),
+      })).filter((b) => Number.isFinite(b.value));
+      const { data: _d, items: _i, ...rest } = m;
+      return { ...rest, bars };
+    }
+  }
   if (m.kind === 'button' && !m.text && typeof m.label === 'string') return { ...m, text: m.label };
   if (m.kind === 'card' && !m.text && !m.heading && typeof m.title === 'string') return { ...m, heading: m.title };
   return m;
 }
-function tidyBeat(b) {
+/** Gemini Live sometimes sends a flow diagram with top-level `type: 'flow'` and individual node/link objects split across beats[].marks. */
+function collapseSplitFlow(a) {
+  if (!Array.isArray(a.beats) || !a.beats.length) return null;
+  const allMarks = a.beats.flatMap((b) => (isObj(b) && Array.isArray(b.marks) ? b.marks.map(maybeParseJson) : [])).filter(isObj);
+  if (!allMarks.length) return null;
+  const isNodeLike = (m) => !m.kind && !m.from && !m.to && typeof (m.text ?? m.label) === 'string' && (NODE_SHAPES.includes(m.shape) || m.id != null || a.type === 'flow' || a.kind === 'flow');
+  const isLinkLike = (m) => typeof m.from === 'string' && typeof m.to === 'string' && (!m.kind || m.kind === 'connect' || m.type === 'connect' || m.type === 'link');
+  const nodes = allMarks.filter(isNodeLike);
+  const links = allMarks.filter(isLinkLike);
+  if (nodes.length < 2 || nodes.length + links.length !== allMarks.length) return null;
+  const say = a.beats.map((b) => (isObj(b) && typeof b.say === 'string' ? b.say.trim() : '')).filter(Boolean).join(' ').slice(0, 240);
+  const flow = tidyFlowMark({
+    kind: 'flow',
+    ...(typeof a.title === 'string' && a.title.trim() ? { title: a.title.trim().slice(0, 60) } : {}),
+    nodes,
+    links,
+    animate: true,
+  });
+  const kept = Object.fromEntries(Object.entries(a).filter(([k]) => CALL_KEYS.has(k) && k !== 'beats'));
+  return { ...kept, beats: [{ say, marks: [flow] }] };
+}
+function tidyBeat(raw) {
+  const b = maybeParseJson(raw);
   if (!isObj(b)) return b;
   const extra = loose(b, BEAT_KEYS);
-  let marks = b.marks ?? [];
+  let marks = maybeParseJson(b.marks ?? []);
   if (Object.keys(extra).length && Array.isArray(marks)) {
-    if (!marks.length && extra.kind) marks = [extra];
+    const tidyExtra = tidyMark(extra);
+    if (!marks.length && tidyExtra?.kind) marks = [tidyExtra];
     else if (marks.length === 1 && isObj(marks[0]) && (!extra.kind || extra.kind === marks[0].kind)) marks = [{ ...extra, ...marks[0] }];
   }
   // No line to say (#117): it draws without a caption instead of the whole drawing failing.
   return { ...b, say: typeof b.say === 'string' ? b.say : '', marks: Array.isArray(marks) ? marks.map(tidyMark) : marks };
 }
-export function tidyDraw(a) {
-  if (!isObj(a) || !Array.isArray(a.beats)) return a;
+export function tidyDraw(raw) {
+  let a = maybeParseJson(raw);
+  if (!isObj(a)) return a;
+  if (typeof a.beats === 'string') {
+    const parsed = maybeParseJson(a.beats);
+    if (Array.isArray(parsed)) a = { ...a, beats: parsed };
+  }
+  const splitFlow = collapseSplitFlow(a);
+  if (splitFlow) return splitFlow;
+  // Top-level marks or single diagram without a beats array: wrap into one beat.
+  if (!Array.isArray(a.beats) && !Array.isArray(a.edit)) {
+    const rawMarks = maybeParseJson(a.marks);
+    if (Array.isArray(rawMarks)) {
+      const { marks: _m, say, ...rest } = a;
+      return { ...rest, beats: [tidyBeat({ say: typeof say === 'string' ? say : '', marks: rawMarks })] };
+    }
+    const extra = loose(a, new Set([...CALL_KEYS, 'say']));
+    const mark = tidyMark(extra);
+    if (isObj(mark) && mark.kind) {
+      const kept = Object.fromEntries(Object.entries(a).filter(([k]) => CALL_KEYS.has(k)));
+      return { ...kept, beats: [tidyBeat({ say: typeof a.say === 'string' ? a.say : '', marks: [mark] })] };
+    }
+    return a;
+  }
+  if (!Array.isArray(a.beats)) return a;
   const extra = loose(a, CALL_KEYS);
   let beats = Object.keys(extra).length && a.beats.length === 1 && isObj(a.beats[0]) ? [{ ...extra, ...a.beats[0] }] : a.beats;
   // The line on the call instead of its first beat.

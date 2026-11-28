@@ -44,34 +44,40 @@
   if (!LINUX) setInterval(() => { if (cursor && window.Jarvis?.ptr) setHot(Jarvis.ptr(cursor[0], cursor[1]) && !handsBusy && !Jarvis.game); }, 120);
   // macOS: a fullscreen game is in front (fullscreen.rs). It holds the cursor, so every click is its own and the
   // Sidekick stops following the cursor (agent.js).
-  window.__jarvisGame = (on) => { if (!window.Jarvis) return; Jarvis.game = !!on; if (on) setHot(false); };
+  window.__jarvisGame = (on) => { if (!window.Jarvis) return; Jarvis.game = !!on; if (on) setHot(false); syncLinuxHitRects?.(true); };
 
   // Linux: click-through by region. On Wayland the cursor can't be followed over other apps, so instead of flipping
   // the whole window as the cursor comes and goes, the page says which rectangles take clicks (Jarvis, its
   // bubbles, cards and buttons) and the shell makes them the window's input shape. X11 sessions work the same way.
+  let syncLinuxHitRects = null;
   if (LINUX) {
     let sent = '', sentAt = 0;
-    setInterval(() => {
-      if (!window.Jarvis?.hitTest) return;
+    syncLinuxHitRects = (force = false) => {
+      if (!window.Jarvis?.hitTest && !handsBusy && !Jarvis.game) return;
       const rects = [];
-      const grown = (r) => rects.push(Math.floor(r[0]) - 8, Math.floor(r[1]) - 8, Math.ceil(r[2]) + 16, Math.ceil(r[3]) + 16);
-      for (const r of Jarvis.inkRects?.() ?? []) grown(r);
-      const card = Jarvis.panelRect?.();
-      if (card) grown(card);
-      const bar = Jarvis.askBarRect?.();
-      if (bar) grown(bar);
-      for (const r of Jarvis.homeRects?.() ?? []) grown(r);
-      const capsule = Jarvis.notchTakes?.() ? Jarvis.notchRect?.() : null;
-      if (capsule) grown(capsule);
-      // Sampled a little past the canvas: hit areas can reach beyond what's drawn.
-      const box = Jarvis.hitBox();
-      if (box) rects.push(...Jarvis.hitRects(Jarvis.hitTest, [box[0] - 48, box[1] - 48, box[2] + 96, box[3] + 96]));
+      // While acting in another app (or during a fullscreen game), the entire overlay must pass clicks through,
+      // otherwise the hopping creature sits right on top of the target button and swallows the click.
+      if (!handsBusy && !Jarvis.game) {
+        const grown = (r) => rects.push(Math.floor(r[0]) - 8, Math.floor(r[1]) - 8, Math.ceil(r[2]) + 16, Math.ceil(r[3]) + 16);
+        for (const r of Jarvis.inkRects?.() ?? []) grown(r);
+        const card = Jarvis.panelRect?.();
+        if (card) grown(card);
+        const bar = Jarvis.askBarRect?.();
+        if (bar) grown(bar);
+        for (const r of Jarvis.homeRects?.() ?? []) grown(r);
+        const capsule = Jarvis.notchTakes?.() ? Jarvis.notchRect?.() : null;
+        if (capsule) grown(capsule);
+        // Sampled a little past the canvas: hit areas can reach beyond what's drawn.
+        const box = Jarvis.hitBox?.();
+        if (box) rects.push(...Jarvis.hitRects(Jarvis.hitTest, [box[0] - 48, box[1] - 48, box[2] + 96, box[3] + 96]));
+      }
       const key = rects.join(','), now = performance.now();
       // Sent when it changes, and again every couple of seconds in case the window's shape was reset under it.
-      if (key === sent && now - sentAt < 2000) return;
+      if (!force && key === sent && now - sentAt < 2000) return;
       sent = key; sentAt = now;
       invoke('set_hit_rects', { rects }).catch(() => { sent = ''; });
-    }, 120);
+    };
+    setInterval(() => syncLinuxHitRects(false), 120);
   }
 
   let agent = null;
@@ -561,8 +567,18 @@
         const [x, y, w, h] = m.step.bounds, o = Jarvis.origin ?? { x: 0, y: 0 }, px = x + w / 2 - o.x, py = y + h / 2 - o.y;
         // A spot on another display isn't this overlay's to show.
         if (px >= 0 && py >= 0 && px <= innerWidth && py <= innerHeight) { hand?.begin(); hand?.at(px, py); }
-      } else if (m.borrow) hand?.begin();
-      else { handsBusy = !!m.on; if (handsBusy) setHot(false); else hand?.end(); }
+        if (handsBusy) syncLinuxHitRects?.(true);
+      } else if (m.borrow) {
+        handsBusy = true;
+        setHot(false);
+        syncLinuxHitRects?.(true);
+        hand?.begin();
+      } else {
+        handsBusy = !!m.on;
+        if (handsBusy) setHot(false);
+        else hand?.end();
+        syncLinuxHitRects?.(true);
+      }
       return;
     }
     if (m.kind === 'greet') { getAgent().act('wave'); return; }

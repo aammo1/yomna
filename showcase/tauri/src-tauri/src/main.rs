@@ -100,6 +100,22 @@ fn to_sidecar(app: &AppHandle, msg: &Value) {
 }
 
 fn to_overlays(app: &AppHandle, msg: &Value) {
+    #[cfg(target_os = "linux")]
+    {
+        let kind = msg.get("kind").and_then(Value::as_str);
+        if kind == Some("hands") {
+            if let Some(on) = msg.get("on").and_then(Value::as_bool) {
+                linux::set_hands_busy(app, on);
+            } else if msg.get("borrow").and_then(Value::as_bool) == Some(true) {
+                linux::set_hands_busy(app, true);
+            }
+        } else if starts_interaction(msg)
+            || shows_answer(msg)
+            || (kind == Some("live") && msg.get("state").and_then(Value::as_str) != Some("closed"))
+        {
+            linux::ensure_overlay_shown(app);
+        }
+    }
     if let Some([x, y, w, h]) = point_target(msg) {
         // A drawing: go to the screen the marked thing is on, even if the cursor is elsewhere.
         move_sidekick_to(app, x + w / 2.0, y + h / 2.0);

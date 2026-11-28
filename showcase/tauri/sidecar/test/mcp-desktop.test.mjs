@@ -435,3 +435,16 @@ test('stdio relay CLI answers initialize and tools/list and exits 0 when socket 
     assert.equal(client.getStderr(), '');
   }
 });
+
+test('mcp-desktop draw tool exposes full diagram schema (flow, graph, timeline, molecule, model)', () => {
+  const drawTool = DESKTOP_TOOLS.find((t) => t.name === 'draw');
+  assert.ok(drawTool);
+  const markProps = drawTool.inputSchema?.properties?.beats?.items?.properties?.marks?.items?.properties;
+  assert.ok(markProps, 'draw schema has beats.items.marks.items.properties');
+  for (const field of ['nodes', 'links', 'plots', 'events', 'smiles', 'parts', 'columns', 'rows', 'bars', 'branches', 'steps', 'vertices', 'questions']) {
+    assert.ok(markProps[field], `MCP draw schema exposes ${field}`);
+  }
+  for (const kind of ['flow', 'graph', 'timeline', 'molecule', 'model', 'mindmap', 'table', 'bars', 'math', 'map', 'quiz']) {
+    assert.ok(markProps.kind?.enum?.includes(kind), `MCP draw schema exposes kind ${kind}`);
+  }
+});

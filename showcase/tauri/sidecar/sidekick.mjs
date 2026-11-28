@@ -1931,8 +1931,8 @@ function panelState() {
 }
 
 
-// The languages talking can be recognised in (macOS). 'auto' follows the Mac's own language list.
-const SPEECH_LANGS = ['auto', 'en-US', 'ar-SA', 'he-IL', 'es-ES', 'fr-FR', 'de-DE', 'it-IT', 'pt-BR', 'ja-JP', 'ko-KR', 'zh-CN', 'hi-IN'];
+// The languages talking can be recognised in (macOS STT & Gemini Live on all platforms). 'auto' follows the conversation.
+const SPEECH_LANGS = ['auto', 'en-US', 'ar-MA', 'ar-SA', 'he-IL', 'es-ES', 'fr-FR', 'de-DE', 'it-IT', 'pt-BR', 'ja-JP', 'ko-KR', 'zh-CN', 'hi-IN'];
 const speechLangId = () => (SPEECH_LANGS.includes(config.speechLang) ? config.speechLang : 'auto');
 let langInfo = null; // what the voice helper settled on for it: { id, engine, online }
 // Live mode runs across macOS, Linux, and Windows when Gemini Live is chosen.
@@ -2111,8 +2111,8 @@ async function onMenu(id, via, value) {
       scheduleReminders();
     });
   }
-  // The language talking is recognised in (macOS): the helper switches engine when Apple's newer one lacks the language.
-  else if (id.startsWith('speechlang:') && MAC) {
+  // The language talking is recognised in (macOS speech recognition and Gemini Live on all platforms).
+  else if (id.startsWith('speechlang:')) {
     const lang = id.slice(11);
     if (!SPEECH_LANGS.includes(lang)) return;
     config.speechLang = lang; langInfo = null; saveConfig(); voiceConfig(); menu();
