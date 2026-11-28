@@ -374,7 +374,7 @@ export function createAgents({ fork, ui, config, root, userName = 'The user', ru
     const content = images.length ? [{ type: 'text', text }, ...images] : text;
     await saveState(a);
     agents.set(a.id, a);
-    spawn(a, { t: 'start', agent: { id: a.id, type: a.type, dir: a.dir, deliverTo: a.deliverTo, returns: a.returns, userName, allow: config.allowActions(), readOnly: config.readOnly?.() ?? [], maxTurns: LIMITS.turns }, model: md, content });
+    spawn(a, { t: 'start', agent: { id: a.id, type: a.type, dir: a.dir, deliverTo: a.deliverTo, returns: a.returns, userName, allow: config.allowActions(), skip: !!(config.allowActions() && config.skipAllow?.()), readOnly: config.readOnly?.() ?? [], maxTurns: LIMITS.turns }, model: md, content });
     tell('launch', a);
     log('agent_start', { id: a.id, type: a.type, provider: md.provider, model: md.model, route: md.route, run: a.runs });
     return a;
@@ -585,7 +585,7 @@ export function createAgents({ fork, ui, config, root, userName = 'The user', ru
     liveText: () => liveAgentsText([...agents.values()], { now: now(), userName }),
     // The overlay (re)loaded: it gets every agent still working, and failures not yet dismissed.
     sync: () => { for (const a of agents.values()) if (a.state === 'working' || a.state === 'waiting' || (a.state === 'failed' && !a.seen)) tell('update', a); },
-    setAllow: (on) => { for (const p of procs.values()) if (p.child.connected) p.child.send({ t: 'allow', on: !!on }); },
+    setAllow: (on, skip = false) => { for (const p of procs.values()) if (p.child.connected) p.child.send({ t: 'allow', on: !!on, skip: !!on && !!skip }); },
     stopAll: () => { clearInterval(watch); for (const id of procs.keys()) stop(id, { state: 'stopped', reason: 'Yomna closed' }); },
   };
 }

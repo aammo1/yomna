@@ -112,13 +112,24 @@ async function desktopApps() {
 }
 
 /** Runs a launcher (gio, gtk-launch, xdg-open) and resolves when it exits, like run(). Not when its output closes:
- *  the app it starts inherits that output and keeps it open for as long as it runs. */
-export const launch = (cmd, args, timeout = 30_000) => new Promise((res) => {
+ *  the app it starts inherits that output and keeps it open for as long as it runs.
+ *  If the launcher is still running after `grace` (default 4 s — e.g. xdg-open staying attached to a freshly started
+ *  browser), detach it and resolve as success so the tool does not time out while the app runs. */
+export const launch = (cmd, args, opts = {}) => new Promise((res) => {
+  const grace = typeof opts === 'number' ? opts : (opts?.grace ?? 4_000);
   let p, stderr = '', done = false;
-  const finish = (r) => { if (done) return; done = true; clearTimeout(t); p?.stderr?.destroy(); res({ stdout: '', stderr, ...r }); };
-  const t = setTimeout(() => { p?.kill(); finish({ err: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) }); }, timeout);
-  try { p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] }); } catch (e) { return finish({ err: e }); }
-  p.stderr.on('data', (d) => { stderr += d; });
+  const onStderr = (d) => { stderr += d; };
+  const finish = (r) => {
+    if (done) return;
+    done = true;
+    clearTimeout(t);
+    p?.stderr?.off('data', onStderr);
+    p?.stderr?.destroy();
+    res({ stdout: '', stderr, ...r });
+  };
+  const t = setTimeout(() => { p?.unref(); finish({ err: null }); }, grace);
+  try { p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true, windowsHide: true }); } catch (e) { return finish({ err: e }); }
+  p.stderr.on('data', onStderr);
   p.on('error', (e) => finish({ err: e }));
   p.on('exit', (code, signal) => finish({ err: code === 0 ? null : Object.assign(new Error(`exit ${code ?? signal}`), { code: code ?? signal }) }));
 });

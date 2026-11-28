@@ -1101,6 +1101,7 @@ const liveCall = createLiveCall({
               secondBrainDirs: secondBrainDirs(),
               mcpConfigPath: desktopMcp?.configPath,
               allowActions: !!config.allowActions,
+              skipAllow: !!config.allowActions && !!config.skipAllow,
               signal: ac.signal,
             })) {
               if (ev.type === 'text_delta') text += ev.text ?? '';
@@ -1234,6 +1235,7 @@ async function prompt(text, image = null, note = '', byVoice = false, news = nul
       secondBrainDirs: secondBrainDirs(),
       mcpConfigPath: desktopMcp?.configPath,
       allowActions: !!config.allowActions,
+      skipAllow: !!config.allowActions && !!config.skipAllow,
       images,
       signal: ctl.signal,
     });
@@ -2259,15 +2261,15 @@ async function onMenu(id, via, value) {
   else if (id === 'notch_off' || id === 'notch_drop' || (id === 'notch_spread' && notchScreen)) { config.notch = id.slice(6); saveConfig(); notchUi(); voiceConfig(); menu(); }
   else if (id === 'set_allow_actions') {
     config.allowActions = !!value;
-    agents.setAllow(config.allowActions);
+    agents.setAllow(config.allowActions, !!config.allowActions && !!config.skipAllow);
     saveConfig();
     menu();
     if (onboarding) obState();
   } else if (id === 'actions') {
-    config.allowActions = !config.allowActions; agents.setAllow(config.allowActions); saveConfig(); menu(); // live section picks this up
+    config.allowActions = !config.allowActions; agents.setAllow(config.allowActions, !!config.allowActions && !!config.skipAllow); saveConfig(); menu(); // live section picks this up
     say(config.allowActions ? 'File edits and commands are on. I promise to be careful.' : 'File edits and commands are off. Hands to myself!', config.allowActions ? 'determined' : 'happy');
   } else if (id === 'skipallow') {
-    config.skipAllow = !config.skipAllow; saveConfig(); menu();
+    config.skipAllow = !config.skipAllow; agents.setAllow(config.allowActions, !!config.allowActions && !!config.skipAllow); saveConfig(); menu();
     say(config.skipAllow ? "I'll go ahead without asking Allow first. Turn it off any time on the General page." : "I'll ask before risky steps again.", config.skipAllow ? 'determined' : 'happy');
   } else if (id === 'update') checkUpdates(true);
   else if (id === 'install_update') installUpdate();
@@ -2527,7 +2529,7 @@ async function onGuide(m) {
     await voiceKeyLogin({ provider: 'gemini', given: m.key.slice(0, 1000), thenVoice: true, note }).catch((e) => { const p = problem('key', e, { store: KEY_STORE }); note(p.text, true, p); });
   }
   else if (m.type === 'ob_files') ob({ kind: 'files', status: await filesStatus(!!m.request) });
-  else if (m.type === 'set_actions') { config.allowActions = !!m.on; agents.setAllow(config.allowActions); saveConfig(); menu(); obState(); }
+  else if (m.type === 'set_actions') { config.allowActions = !!m.on; agents.setAllow(config.allowActions, !!config.allowActions && !!config.skipAllow); saveConfig(); menu(); obState(); }
   else if (m.type === 'set_login') setLogin(!!m.on);
   else if (m.type === 'ob_brain') obBrain(m);
   else if (m.type === 'ob_lite') { config.lite = !!m.on; saveConfig(); agentStale = true; menu(); obState(); }

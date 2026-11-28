@@ -1,7 +1,7 @@
 // One background agent, in its own process (forked by agents.mjs): a crash or a heavy task here never slows the chat.
 // It talks to the sidecar over Node's IPC channel and exits when the sidecar goes away.
 //
-// in:  {t:'start', agent, model, content} {t:'reply', id, value} {t:'steer', text} {t:'allow', on}
+// in:  {t:'start', agent, model, content} {t:'reply', id, value} {t:'steer', text} {t:'allow', on, skip?}
 // out: {t:'beat'} {t:'tick'} {t:'tool', name} {t:'ui', m} (an operator's {kind:'hands'} overlay message) {t:'turn', usage} {t:'plan', text} {t:'ask', id, question} {t:'ask_cancel', id}
 //      {t:'creds', id} {t:'finish', result} {t:'end', ok, error?}
 import { pathToFileURL } from 'node:url';
@@ -30,7 +30,7 @@ function request(msg, signal) {
   });
 }
 
-let allow = true, agent = null, harnessMgr = null, started = false;
+let allow = true, skip = false, agent = null, harnessMgr = null, started = false;
 const queued = [];
 function steer(text) {
   const t = `(Message from the user while you work: ${text})`;
@@ -42,7 +42,7 @@ process.on('message', (m) => {
   if (m?.t === 'start' && !started) { started = true; run(m).catch((e) => end(false, String(e?.message ?? e).slice(0, 300))); }
   else if (m?.t === 'reply') { const r = waiting.get(m.id); waiting.delete(m.id); r?.(m.value ?? null); }
   else if (m?.t === 'steer' && typeof m.text === 'string') steer(m.text.slice(0, 4000));
-  else if (m?.t === 'allow') allow = !!m.on;
+  else if (m?.t === 'allow') { allow = !!m.on; skip = !!m.on && !!m.skip; }
 });
 
 function end(ok, error) {
@@ -65,6 +65,7 @@ export function trimRun(msgs, budgetChars) {
 
 async function run({ agent: a, model: md, content }) {
   allow = a.allow !== false;
+  skip = allow && a.skip === true;
   let result = null;
   const { tools: all, desktopHandlers } = createTools({
     allowActions: () => allow, ui: (m) => { if (m?.kind === 'hands') send({ t: 'ui', m }); }, openUrl: () => {}, onCommitments: () => {}, showList: () => {}, fmtWhen: (ms) => new Date(ms).toLocaleString(),
@@ -143,6 +144,7 @@ async function run({ agent: a, model: md, content }) {
         cwd: a.dir,
         mcpConfigPath: bridge.configPath,
         allowActions: allow,
+        skipAllow: allow && skip,
         signal: ctl.signal,
       })) {
         if (ev.type === 'text_delta' || ev.type === 'thinking_delta') { tick(); if (ev.type === 'text_delta') text += ev.text; }

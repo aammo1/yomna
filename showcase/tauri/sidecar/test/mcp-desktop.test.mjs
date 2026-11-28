@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +15,7 @@ import {
   createDesktopMcpBridge,
   createDesktopMcpDispatcher,
   resolveRelayScript,
+  runEmptyRelay,
 } from '../mcp-desktop.mjs';
 import { AGENTS_DIR, CONFIG_PATH, DATA_DIR, SKILLS_DIR, YOMNA_DIR, dataPaths, yomnaDir } from '../datadir.mjs';
 import { createSecrets } from '../secrets.mjs';
@@ -361,4 +363,75 @@ test('resolveRelayScript prefers sibling mcp-desktop.mjs when bundled into anoth
     resolveRelayScript({ selfPath: bundledRelay, existsSync: () => false }),
     bundledRelay,
   );
+});
+
+test('runEmptyRelay serves initialize and empty tools/list over stdio and exits 0 on EOF', async () => {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  let output = '';
+  stdout.setEncoding('utf8');
+  stdout.on('data', (chunk) => { output += chunk; });
+
+  const exited = new Promise((resolve) => {
+    runEmptyRelay({ stdin, stdout, onExit: resolve });
+  });
+
+  stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } })}\n`);
+  stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+  stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })}\n`);
+  stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list_windows', arguments: {} } })}\n`);
+  stdin.end();
+
+  const exitCode = await exited;
+  assert.equal(exitCode, 0);
+
+  const responses = output.trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(responses.length, 3);
+  assert.deepEqual(responses[0], {
+    jsonrpc: '2.0',
+    id: 1,
+    result: {
+      protocolVersion: '2025-03-26',
+      capabilities: { tools: {} },
+      serverInfo: { name: 'yomna-desktop', version: '1.0.0' },
+    },
+  });
+  assert.deepEqual(responses[1], {
+    jsonrpc: '2.0',
+    id: 2,
+    result: { tools: [] },
+  });
+  assert.deepEqual(responses[2], {
+    jsonrpc: '2.0',
+    id: 3,
+    error: { code: -32601, message: 'Yomna is not running.' },
+  });
+});
+
+test('stdio relay CLI answers initialize and tools/list and exits 0 when socket is missing or dead', async () => {
+  const deadSock = path.join(os.tmpdir(), `yomna-missing-${process.pid}-${Date.now()}.sock`);
+  for (const args of [[], ['--relay', deadSock]]) {
+    const client = spawnRelayClient(args);
+    client.child.stdin.end(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: MCP_PROTOCOL_VERSION },
+      })}\n` +
+      `${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })}\n`,
+    );
+
+    const init = await client.nextResponse();
+    assert.equal(init.id, 1);
+    assert.equal(init.result.serverInfo.name, 'yomna-desktop');
+
+    const list = await client.nextResponse();
+    assert.equal(list.id, 2);
+    assert.deepEqual(list.result.tools, []);
+
+    const code = await client.close();
+    assert.equal(code, 0);
+    assert.equal(client.getStderr(), '');
+  }
 });

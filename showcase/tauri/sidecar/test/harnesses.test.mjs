@@ -21,7 +21,7 @@ import {
   hangTimeoutMs,
   probeHarness,
 } from '../harnesses/index.mjs';
-import { buildAgyArgs, buildAgySettings } from '../harnesses/agy.mjs';
+import { agyMcpAddArgs, buildAgyArgs, planAgyMcp } from '../harnesses/agy.mjs';
 import { buildClaudeArgs } from '../harnesses/claude.mjs';
 import { buildOpenCodeArgs, buildOpenCodeConfig } from '../harnesses/opencode.mjs';
 import { buildPiArgs } from '../harnesses/pi.mjs';
@@ -134,12 +134,11 @@ test('detectHarnesses recommends opencode when agy is missing and opencode is au
 
 test('safety flag mapping enforces read-only when allowActions=false and edit/auto when true', () => {
   // Antigravity (agy)
-  const agySafe = buildAgyArgs({ allowActions: false, secondBrainDirs: ['/notes'], settingsPath: '/tmp/s.json', sessionId: 'c-1' });
+  const agySafe = buildAgyArgs({ allowActions: false, secondBrainDirs: ['/notes'], sessionId: 'c-1' });
   assert.ok(agySafe.includes('--mode') && agySafe[agySafe.indexOf('--mode') + 1] === 'plan');
   assert.ok(agySafe.includes('--sandbox'));
   assert.ok(agySafe.includes('--conversation') && agySafe[agySafe.indexOf('--conversation') + 1] === 'c-1');
   assert.ok(agySafe.includes('--add-dir') && agySafe[agySafe.indexOf('--add-dir') + 1] === '/notes');
-  assert.ok(agySafe.includes('--settings') && agySafe[agySafe.indexOf('--settings') + 1] === '/tmp/s.json');
 
   const agyEdit = buildAgyArgs({ allowActions: true });
   assert.ok(agyEdit.includes('--mode') && agyEdit[agyEdit.indexOf('--mode') + 1] === 'accept-edits');
@@ -175,20 +174,45 @@ test('safety flag mapping enforces read-only when allowActions=false and edit/au
   assert.equal(piEdit[piEdit.indexOf('--tools') + 1], 'read,bash,edit,write,grep,find,ls');
 });
 
-test('AgyAdapter injects mcpConfigPath via --settings, streams NDJSON events, and cleans up temp file', async () => {
+test('planAgyMcp splits yomna-desktop socket into env and formats agy mcp add args', () => {
+  assert.deepEqual(planAgyMcp(null), { register: [], env: {} });
+  assert.deepEqual(
+    planAgyMcp({
+      'yomna-desktop': { command: 'node', args: ['/app/mcp-desktop.mjs', '/tmp/yomna-1.sock'] },
+      helper: { command: 'npx', args: ['-y', '@example/mcp'] },
+    }),
+    {
+      register: [
+        { name: 'yomna-desktop', command: 'node', args: ['/app/mcp-desktop.mjs'] },
+        { name: 'helper', command: 'npx', args: ['-y', '@example/mcp'] },
+      ],
+      env: { YOMNA_MCP_SOCKET: '/tmp/yomna-1.sock' },
+    },
+  );
+  assert.deepEqual(
+    planAgyMcp({ 'yomna-desktop': { command: 'node', args: ['/app/mcp-desktop.mjs'] } }),
+    {
+      register: [{ name: 'yomna-desktop', command: 'node', args: ['/app/mcp-desktop.mjs'] }],
+      env: {},
+    },
+  );
+  assert.deepEqual(
+    agyMcpAddArgs({ name: 'yomna-desktop', command: 'node', args: ['/app/mcp-desktop.mjs'] }),
+    ['mcp', 'add', 'yomna-desktop', '--', 'node', '/app/mcp-desktop.mjs'],
+  );
+});
+
+test('AgyAdapter registers MCP via "agy mcp add" and passes YOMNA_MCP_SOCKET', async () => {
   const tmp = makeTempDir();
   try {
     const binDir = path.join(tmp, 'bin');
     fs.mkdirSync(binDir);
     const mcpPath = path.join(tmp, 'yomna-mcp.json');
-    const capturedPath = path.join(tmp, 'captured.json');
+    const capturedPath = path.join(tmp, 'captured.jsonl');
     fs.writeFileSync(
       mcpPath,
-      JSON.stringify({ mcpServers: { 'yomna-desktop': { command: 'node', args: ['mcp-desktop.mjs'] } } }),
+      JSON.stringify({ mcpServers: { 'yomna-desktop': { command: 'node', args: ['mcp-desktop.mjs', '/tmp/x.sock'] } } }),
     );
-
-    const agySettings = buildAgySettings({ mcpConfigPath: mcpPath });
-    assert.deepEqual(agySettings.mcpServers['yomna-desktop'], { command: 'node', args: ['mcp-desktop.mjs'] });
 
     writeExecutableScript(
       binDir,
@@ -196,12 +220,8 @@ test('AgyAdapter injects mcpConfigPath via --settings, streams NDJSON events, an
       `
       import fs from 'node:fs';
       const args = process.argv.slice(2);
-      const sIdx = args.indexOf('--settings');
-      const settingsFile = sIdx >= 0 ? args[sIdx + 1] : null;
-      const settings = settingsFile ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : null;
-      const pIdx = args.indexOf('-p');
-      const promptArg = pIdx >= 0 ? args[pIdx + 1] : '';
-      fs.writeFileSync(${JSON.stringify(capturedPath)}, JSON.stringify({ args, settingsFile, settings, promptArg }));
+      fs.appendFileSync(${JSON.stringify(capturedPath)}, JSON.stringify({ args, socket: process.env.YOMNA_MCP_SOCKET ?? null }) + '\\n');
+      if (args[0] === 'mcp') process.exit(0);
       console.log(JSON.stringify({ event: 'init', conversation_id: 'agy-sess-42' }));
       console.log(JSON.stringify({ event: 'step_update', step_update: { step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'Hello ' } }));
       console.log(JSON.stringify({ event: 'step_update', step_update: { step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'world!' } }));
@@ -228,14 +248,66 @@ test('AgyAdapter injects mcpConfigPath via --settings, streams NDJSON events, an
       { type: 'done', text: 'Hello world!' },
     ]);
 
-    const captured = JSON.parse(fs.readFileSync(capturedPath, 'utf8'));
-    assert.deepEqual(captured.settings.mcpServers['yomna-desktop'], {
-      command: 'node',
-      args: ['mcp-desktop.mjs'],
-    });
-    assert.equal(captured.args.includes('--input-format'), false, 'must not pass --input-format after --print');
-    assert.equal(fs.existsSync(captured.settingsFile), false, 'temp --settings file should be cleaned up');
-    assert.match(captured.promptArg, /<system_instructions>[\s\S]*Be concise\.[\s\S]*What is on screen\?/);
+    // Second send with the same config must not invoke `agy mcp add` again.
+    const secondEvents = [];
+    for await (const ev of adapter.send({
+      prompt: 'Follow up?',
+      mcpConfigPath: mcpPath,
+      allowActions: false,
+    })) {
+      secondEvents.push(ev);
+    }
+    assert.equal(secondEvents.at(-1)?.type, 'done');
+
+    const calls = fs.readFileSync(capturedPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const mcpCalls = calls.filter((c) => c.args[0] === 'mcp');
+    const turnCalls = calls.filter((c) => c.args[0] !== 'mcp');
+
+    assert.equal(mcpCalls.length, 1);
+    assert.deepEqual(mcpCalls[0].args, ['mcp', 'add', 'yomna-desktop', '--', 'node', 'mcp-desktop.mjs']);
+    assert.equal(mcpCalls[0].args.includes('/tmp/x.sock'), false);
+
+    assert.equal(turnCalls.length, 2);
+    assert.equal(turnCalls[0].args.includes('--settings'), false);
+    assert.equal(turnCalls[0].args.includes('--input-format'), false, 'must not pass --input-format after --print');
+    assert.equal(turnCalls[0].socket, '/tmp/x.sock');
+    assert.equal(turnCalls[1].socket, '/tmp/x.sock');
+
+    const pIdx = turnCalls[0].args.indexOf('-p');
+    const promptArg = pIdx >= 0 ? turnCalls[0].args[pIdx + 1] : '';
+    assert.match(promptArg, /<system_instructions>[\s\S]*Be concise\.[\s\S]*What is on screen\?/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('AgyAdapter continues the turn even when "agy mcp add" fails', async () => {
+  const tmp = makeTempDir();
+  try {
+    const binDir = path.join(tmp, 'bin');
+    fs.mkdirSync(binDir);
+    writeExecutableScript(
+      binDir,
+      'agy',
+      `
+      const args = process.argv.slice(2);
+      if (args[0] === 'mcp') { console.error('write failed'); process.exit(1); }
+      console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'agy-1', status: 'SUCCESS', response: 'Still works' } }));
+      `,
+    );
+
+    const adapter = new AgyAdapter({ env: { PATH: binDir, HOME: tmp, USERPROFILE: tmp } });
+    const events = [];
+    for await (const ev of adapter.send({
+      prompt: 'hi',
+      mcpServer: { command: 'node', args: ['mcp-desktop.mjs', '/tmp/x.sock'] },
+    })) {
+      events.push(ev);
+    }
+    assert.deepEqual(events, [
+      { type: 'session', sessionId: 'agy-1' },
+      { type: 'done', text: 'Still works' },
+    ]);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

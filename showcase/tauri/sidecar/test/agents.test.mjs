@@ -247,10 +247,10 @@ assert.match(agentSystem('maker', { dir: '/x', returns: 'answer' }), /report is 
     children.push(c);
     return c;
   };
-  let allow = true, provider = 'anthropic';
+  let allow = true, skip = false, provider = 'anthropic';
   const config = {
     model: async () => ({ provider, model: 'm1', route: 'api' }), creds: async () => ({ accessToken: 'k', accountId: 'acc' }),
-    allowActions: () => allow, image: () => ({ type: 'image', mediaType: 'image/png', data: Buffer.from('png').toString('base64') }),
+    allowActions: () => allow, skipAllow: () => allow && skip, image: () => ({ type: 'image', mediaType: 'image/png', data: Buffer.from('png').toString('base64') }),
     open: async (p) => opened.push(p), reveal: async (p) => revealed.push(p),
   };
   // macOS keeps temp folders under /private/var, a system path to checkOpen: the rule sees them under a plain home.
@@ -273,6 +273,7 @@ assert.match(agentSystem('maker', { dir: '/x', returns: 'answer' }), /report is 
   assert.equal(c.runner, '/x/agentrun.mjs');
   assert.deepEqual(c.opts.stdio, ['ignore', 'pipe', 'pipe', 'ipc'], 'its stdout never reaches the app protocol');
   assert.equal(startMsg.t, 'start');
+  assert.equal(startMsg.agent.skip, false);
   assert.equal(startMsg.agent.dir, a.dir);
   assert.equal(startMsg.model.model, 'm1');
   assert.equal(startMsg.content.filter((p) => p.type === 'image').length, 2, 'pictures ride along');
@@ -387,6 +388,10 @@ assert.match(agentSystem('maker', { dir: '/x', returns: 'answer' }), /report is 
   assert.equal(mgr.get(d.id).reason, 'It crashed (1)');
   // Steering a working one, and carrying on a finished one in the same folder.
   const e = await mgr.start({ type: 'maker', title: 'Slides', brief: 'Make slides.' });
+  mgr.setAllow(true, true);
+  assert.deepEqual(children.at(-1).sent.at(-1), { t: 'allow', on: true, skip: true });
+  mgr.setAllow(false, true);
+  assert.deepEqual(children.at(-1).sent.at(-1), { t: 'allow', on: false, skip: false });
   assert.match(await mgr.steer(e.id, 'Use blue'), /Passed on/);
   assert.deepEqual(children.at(-1).sent.at(-1), { t: 'steer', text: 'Use blue' });
   assert.match(await mgr.steer(a.id, 'Make the logo bigger'), /working again in the same folder/);
@@ -402,9 +407,12 @@ assert.match(agentSystem('maker', { dir: '/x', returns: 'answer' }), /report is 
   await tick();
   const desk = path.join(home, 'Desktop');
   fs.mkdirSync(desk); fs.writeFileSync(path.join(desk, 'card.txt'), 'theirs');
+  skip = true;
   const g = await mgr.start({ type: 'maker', title: 'Card', brief: 'A card.', deliver_to: '~/Desktop' });
+  skip = false;
   fs.writeFileSync(path.join(g.dir, 'files', 'card.txt'), 'made');
   const gc = children.at(-1);
+  assert.equal(gc.sent[0].agent.skip, true, 'start payload carries skip when skipAllow is on');
   gc.emit('message', { t: 'finish', result: checkFinish({ outcome: 'Made a card.', files: [{ path: 'files/card.txt' }] }, { dir: g.dir }).result });
   gc.emit('message', { t: 'end', ok: true }); gc.emit('close', 0, null); await tick();
   assert.equal(fs.readFileSync(path.join(desk, 'card.txt'), 'utf8'), 'theirs', 'nothing is overwritten');

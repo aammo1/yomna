@@ -655,16 +655,109 @@ export async function createDesktopMcpBridge(handlers = {}, options = {}) {
   };
 }
 
+function readJsonLines(stdin, onLine, onEnd) {
+  let buf = '';
+  stdin.setEncoding('utf8');
+  stdin.on('data', (chunk) => {
+    buf += chunk;
+    for (let idx; (idx = buf.indexOf('\n')) >= 0;) {
+      const line = buf.slice(0, idx).replace(/\r$/, '').trim();
+      buf = buf.slice(idx + 1);
+      if (line) onLine(line);
+    }
+  });
+  stdin.on('end', () => {
+    const tail = buf.replace(/\r$/, '').trim();
+    if (tail) onLine(tail);
+    buf = '';
+    onEnd();
+  });
+}
+
+function emptyRelayOne(msg) {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.method !== 'string') {
+    return { jsonrpc: '2.0', id: msg?.id ?? null, error: { code: -32600, message: 'Invalid Request' } };
+  }
+  const isNotification = !Object.hasOwn(msg, 'id') || msg.id === undefined;
+  if (isNotification) return null;
+  if (msg.method === 'initialize') {
+    return {
+      jsonrpc: '2.0',
+      id: msg.id,
+      result: {
+        protocolVersion: msg.params?.protocolVersion || MCP_PROTOCOL_VERSION,
+        capabilities: { tools: {} },
+        serverInfo: SERVER_INFO,
+      },
+    };
+  }
+  if (msg.method === 'tools/list') {
+    return { jsonrpc: '2.0', id: msg.id, result: { tools: [] } };
+  }
+  return { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Yomna is not running.' } };
+}
+
+function emptyRelayResponse(line) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } };
+  }
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request' } };
+    const out = parsed.map(emptyRelayOne).filter((r) => r !== null);
+    return out.length ? out : null;
+  }
+  return emptyRelayOne(parsed);
+}
+
+/**
+ * Minimal stdio MCP server used when Yomna is not running (missing or dead socket)
+ * so external CLI sessions don't fail startup with a broken MCP server.
+ */
+export function runEmptyRelay({
+  stdin = process.stdin,
+  stdout = process.stdout,
+  onExit = (code) => { process.exitCode = code; },
+  initialLines = [],
+  stdinEnded = false,
+  attachStdin = true,
+} = {}) {
+  let exited = false;
+  const finish = () => {
+    if (exited) return;
+    exited = true;
+    onExit(0);
+  };
+  const handleLine = (line) => {
+    const res = emptyRelayResponse(line);
+    if (res !== null) stdout.write(`${JSON.stringify(res)}\n`);
+  };
+
+  stdout.on('error', () => {});
+  for (const line of initialLines) {
+    const trimmed = String(line).replace(/\r$/, '').trim();
+    if (trimmed) handleLine(trimmed);
+  }
+  if (stdinEnded) {
+    finish();
+  } else if (attachStdin) {
+    readJsonLines(stdin, handleLine, finish);
+  }
+  return { handleLine, finish };
+}
+
 /**
  * Stdio-to-IPC relay entrypoint: pipes newline-delimited JSON-RPC between stdin/stdout
- * and the sidecar's live socket/pipe.
+ * and the sidecar's live socket/pipe. Falls back to `runEmptyRelay` when the socket is absent.
  */
 export function runStdioRelay(socketPath, { stdin = process.stdin, stdout = process.stdout, onExit = (code) => process.exit(code) } = {}) {
   const socket = net.createConnection(socketPath);
-  let inBuf = '';
   let outBuf = '';
   let connected = false;
   let stdinEnded = false;
+  let emptyRelay = null;
   const pending = [];
 
   stdout.on('error', () => {});
@@ -676,14 +769,13 @@ export function runStdioRelay(socketPath, { stdin = process.stdin, stdout = proc
   };
 
   const sendToSocket = (line) => {
-    const payload = `${line}\n`;
-    if (connected && !socket.destroyed) socket.write(payload);
-    else pending.push(payload);
+    if (connected && !socket.destroyed) socket.write(`${line}\n`);
+    else pending.push(line);
   };
 
   socket.on('connect', () => {
     connected = true;
-    while (pending.length && !socket.destroyed) socket.write(pending.shift());
+    while (pending.length && !socket.destroyed) socket.write(`${pending.shift()}\n`);
     maybeHalfClose();
   });
 
@@ -703,26 +795,33 @@ export function runStdioRelay(socketPath, { stdin = process.stdin, stdout = proc
     outBuf = '';
   });
 
-  stdin.setEncoding('utf8');
-  stdin.on('data', (chunk) => {
-    inBuf += chunk;
-    for (let idx; (idx = inBuf.indexOf('\n')) >= 0;) {
-      const line = inBuf.slice(0, idx).replace(/\r$/, '').trim();
-      inBuf = inBuf.slice(idx + 1);
-      if (line) sendToSocket(line);
-    }
-  });
+  readJsonLines(
+    stdin,
+    (line) => {
+      if (emptyRelay) emptyRelay.handleLine(line);
+      else sendToSocket(line);
+    },
+    () => {
+      stdinEnded = true;
+      if (emptyRelay) emptyRelay.finish();
+      else maybeHalfClose();
+    },
+  );
 
-  stdin.on('end', () => {
-    const tail = inBuf.replace(/\r$/, '').trim();
-    if (tail) sendToSocket(tail);
-    inBuf = '';
-    stdinEnded = true;
-    maybeHalfClose();
+  socket.on('close', (hadError) => {
+    if (!emptyRelay) onExit(hadError ? 1 : 0);
   });
-
-  socket.on('close', (hadError) => onExit(hadError ? 1 : 0));
   socket.on('error', (err) => {
+    if (!connected && !emptyRelay && (err?.code === 'ENOENT' || err?.code === 'ECONNREFUSED')) {
+      emptyRelay = runEmptyRelay({
+        stdout,
+        onExit,
+        initialLines: pending.splice(0),
+        stdinEnded,
+        attachStdin: false,
+      });
+      return;
+    }
     process.stderr.write(`yomna-desktop relay error: ${err?.message || err}\n`);
     onExit(1);
   });
@@ -749,8 +848,17 @@ if (isMain) {
   const args = process.argv.slice(2);
   const socketPath = args[0] === '--relay' ? args[1] : (args[0] || process.env.YOMNA_MCP_SOCKET || '');
   if (!socketPath) {
-    process.stderr.write('Usage: node mcp-desktop.mjs [--relay] <socketPath>\n');
-    process.exit(1);
+    runEmptyRelay();
+  } else {
+    runStdioRelay(socketPath, {
+      onExit: (code) => {
+        if (code === 0) {
+          process.exitCode = 0;
+          process.stdin.pause();
+        } else {
+          process.exit(code);
+        }
+      },
+    });
   }
-  runStdioRelay(socketPath);
 }

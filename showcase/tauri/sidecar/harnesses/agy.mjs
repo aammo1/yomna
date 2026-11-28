@@ -13,14 +13,25 @@ import {
   loadMcpServers,
   resolveBinary,
   runCliTurn,
-  writeTempJson,
 } from './base.mjs';
 
-export function buildAgySettings({ mcpConfigPath, mcpServer } = {}) {
-  const mcpServers = loadMcpServers({ mcpConfigPath, mcpServer });
-  if (!Object.keys(mcpServers).length) return null;
-  return { mcpServers };
+/**
+ * Splits each MCP server into a global `agy mcp add` registration (without any
+ * per-bridge socket arg) and per-turn env (`YOMNA_MCP_SOCKET`).
+ */
+export function planAgyMcp(servers) {
+  const register = [];
+  const env = {};
+  for (const [name, s] of Object.entries(servers ?? {})) {
+    if (!s?.command) continue;
+    const args = Array.isArray(s.args) ? [...s.args] : [];
+    if (name === 'yomna-desktop' && args.length >= 2) env.YOMNA_MCP_SOCKET = args.pop();
+    register.push({ name, command: s.command, args });
+  }
+  return { register, env };
 }
+
+export const agyMcpAddArgs = ({ name, command, args }) => ['mcp', 'add', name, '--', command, ...args];
 
 export function buildAgyArgs({
   prompt = '',
@@ -60,6 +71,8 @@ function buildPromptText({ prompt, systemPrompt, images }) {
 }
 
 export class AgyAdapter extends HarnessAdapter {
+  #registered = new Map();
+
   constructor(options = {}) {
     super(options, {
       id: 'agy',
@@ -148,9 +161,15 @@ export class AgyAdapter extends HarnessAdapter {
       return;
     }
 
-    const settings = buildAgySettings({ mcpConfigPath, mcpServer });
-    const tempSettings = settings ? writeTempJson('yomna-agy-', settings, 'settings.json') : null;
-    const unregisterCleanup = tempSettings ? this._registerCleanup(tempSettings.cleanup) : null;
+    const { register, env: mcpEnv } = planAgyMcp(loadMcpServers({ mcpConfigPath, mcpServer }));
+    for (const r of register) {
+      const key = JSON.stringify(r);
+      if (this.#registered.get(r.name) === key) continue;
+      const res = await execProbe(binPath, agyMcpAddArgs(r), { env, timeout: 10_000 });
+      if (res.ok) this.#registered.set(r.name, key);
+      // On failure, continue the turn anyway (agy still runs without Yomna tools).
+    }
+
     const turn = this._beginTurn(signal);
     const mapper = createStreamJsonMapper();
 
@@ -160,7 +179,6 @@ export class AgyAdapter extends HarnessAdapter {
         prompt: promptText,
         allowActions,
         secondBrainDirs,
-        settingsPath: tempSettings?.path,
         sessionId,
         model: this.model,
       });
@@ -169,7 +187,7 @@ export class AgyAdapter extends HarnessAdapter {
         bin: binPath,
         args,
         cwd,
-        env,
+        env: { ...env, ...mcpEnv },
         hangMs: hangTimeoutMs(hangTimeoutOverride ?? this.hangTimeoutMs),
         label: this.label,
         signal: turn.signal,
@@ -184,7 +202,6 @@ export class AgyAdapter extends HarnessAdapter {
       });
     } finally {
       turn.finish();
-      unregisterCleanup?.();
     }
   }
 }
