@@ -110,7 +110,7 @@ if (process.platform === 'darwin') {
     app('gone', { Name: 'Gone', Hidden: 'true' }),
     { id: 'a-link', file: '/x/a-link.desktop', entry: { Type: 'Link', Name: 'A Link', URL: 'https://example.com' } },
   ];
-  const find = (n) => findDesktopApp(apps, n)?.id ?? null;
+  const find = (n) => findDesktopApp(apps, n, {})?.id ?? null;
   assert.equal(find('Files'), 'org.gnome.Nautilus', 'by the name in the menus');
   assert.equal(find('files'), 'org.gnome.Nautilus', 'any case');
   assert.equal(find('nautilus'), 'org.gnome.Nautilus', 'by the last part of its id');
@@ -123,6 +123,42 @@ if (process.platform === 'darwin') {
   assert.equal(find('A Link'), null, 'only apps');
   assert.equal(find('Photoshop'), null);
   assert.equal(find('  '), null);
+  const more = [
+    app('com.mitchellh.ghostty', { Name: 'Ghostty', Categories: 'System;TerminalEmulator;' }),
+    app('foot', { Name: 'Foot', Categories: 'System;TerminalEmulator;' }),
+    app('zen', { Name: 'Zen Browser', GenericName: 'Web Browser', Categories: 'Network;WebBrowser;' }),
+    app('zoom', { Name: 'Zoom' }),
+  ];
+  const find2 = (n, d = {}) => findDesktopApp(more, n, d)?.id ?? null;
+  assert.equal(find2('terminal'), 'com.mitchellh.ghostty', 'a kind of app by its category');
+  assert.equal(find2('the terminal', { TerminalEmulator: ['foot.desktop'] }), 'foot', 'their default of that kind first');
+  assert.equal(find2('Zan Browser'), 'zen', 'a misheard name within a letter');
+  assert.equal(find2('zen'), 'zen');
+  assert.equal(find2('Zoom'), 'zoom');
+  assert.equal(find2('Zen Zoom'), null, 'no loose match on unrelated words');
+  assert.equal(find2('Firefox'), null, 'not installed stays not found');
+
+  // Open windows, matched by what the user called them (Hyprland window tool).
+  const { matchWindow, hyprCmd } = await import('../tools.mjs');
+  const wins = [
+    { address: '0x1', class: 'zen', initialClass: 'zen', title: 'GitHub — Zen Browser', workspace: 1, focused: false },
+    { address: '0x2', class: 'com.mitchellh.ghostty', initialClass: 'com.mitchellh.ghostty', title: '~', workspace: 2, focused: true },
+    { address: '0x3', class: 'omacalc', initialClass: 'omacalc', title: 'Omacalc', workspace: 1, focused: false },
+    { address: '0x4', class: 'chrome-discord.com__channels_@me-Default', initialClass: '', title: 'Discord', workspace: 3, focused: false },
+  ];
+  const winOf = (n) => matchWindow(wins, n, more)?.address ?? null;
+  assert.equal(winOf('zen'), '0x1');
+  assert.equal(winOf('Zen Browser'), '0x1', 'by the app name of its .desktop file');
+  assert.equal(winOf('Omacalc'), '0x3', 'any case (Hyprland classes are case-sensitive)');
+  assert.equal(winOf('ghostty'), '0x2', 'the last part of a dotted class');
+  assert.equal(winOf('terminal'), '0x2', 'a kind of app');
+  assert.equal(winOf('Discord'), '0x4', 'a web app by its title');
+  assert.equal(winOf('Firefox'), null);
+  // Lua first (Hyprland 0.55+ Lua configs reject the classic form), the classic form as the fallback; quoting is safe.
+  assert.deepEqual(hyprCmd.focus('0x2'), ['hl.dsp.focus({ window = "address:0x2" })', ['focuswindow', 'address:0x2']]);
+  assert.deepEqual(hyprCmd.close('0x2'), ['hl.dsp.window.close({ window = "address:0x2" })', ['closewindow', 'address:0x2']]);
+  assert.equal(hyprCmd.move('0x2', '3')[0], 'hl.dsp.window.move({ workspace = "3", follow = false, window = "address:0x2" })');
+  assert.equal(hyprCmd.workspace('") os.exit() --')[0], 'hl.dsp.focus({ workspace = "\\") os.exit() --" })', 'a value never breaks out of its Lua string');
   console.log('linux app tests: passed');
 }
 

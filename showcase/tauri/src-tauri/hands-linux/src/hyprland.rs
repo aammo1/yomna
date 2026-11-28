@@ -244,6 +244,23 @@ fn run_hyprctl(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// One dispatch: the Lua form first (Hyprland 0.55+ with a Lua config only takes `hl.dsp.…(…)`, and answers the classic
+/// form with an error but a zero exit code), then the classic `dispatch <name> <args>` for older setups.
+pub fn hypr_dispatch(lua: &str, classic: &[&str]) -> Result<(), String> {
+    let lua_out = run_hyprctl(&["dispatch", lua]).unwrap_or_default();
+    if lua_out.trim_start().starts_with("ok") {
+        return Ok(());
+    }
+    let mut args = vec!["dispatch"];
+    args.extend_from_slice(classic);
+    let out = run_hyprctl(&args)?;
+    if out.trim_start().starts_with("ok") {
+        Ok(())
+    } else {
+        Err(format!("hyprctl dispatch failed: {} / {}", lua_out.trim(), out.trim()))
+    }
+}
+
 fn hypr_windows(include_yomna: bool) -> Result<Vec<Win>, String> {
     let raw = run_hyprctl(&["clients", "-j"])?;
     let mut list = parse_hypr_clients_json(&raw, include_yomna, true)?;
@@ -551,7 +568,7 @@ pub fn window_at(x: i32, y: i32) -> Option<Win> {
 pub fn focus_window(w: &Win) -> Result<(), String> {
     if is_hyprland() {
         let arg = format!("address:{}", w.id);
-        run_hyprctl(&["dispatch", "focuswindow", &arg])?;
+        hypr_dispatch(&format!("hl.dsp.focus({{ window = \"{arg}\" }})"), &["focuswindow", &arg])?;
         std::thread::sleep(std::time::Duration::from_millis(120));
         return Ok(());
     }

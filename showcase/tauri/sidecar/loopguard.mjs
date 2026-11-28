@@ -72,6 +72,12 @@ const reasonOf = (msg) => REASONS.find(([re]) => re.test(msg))?.[1] ?? 'error';
 // The tools whose error wording is Yomna's own, with what came off the screen or from the model always in quotes.
 // Not run_command or the web tools: their errors carry command output and page text.
 const SCREEN_TOOLS = new Set(['act_in_app', 'read_window', 'take_screenshot', 'list_windows', 'draw']);
+const LOGGED_ERRORS = new Set(['open', 'window']); // never run_command: its errors hold command output
+/** An app name asked for, for the log; a link or a path is only named as such (they can be private). */
+const appWord = (args) => {
+  const v = String(args?.target || args?.url || args?.path || args?.app || '').trim();
+  return /^[a-z][a-z0-9+.-]*:|^[~/.\\]|^[a-z]:\\/i.test(v) || /\.[a-z]{2,}(?:[/?#]|$)/i.test(v) ? (/^[~/.\\]|^[a-z]:\\/i.test(v) ? '(path)' : '(link)') : v.slice(0, 40);
+};
 /** A failure's words, safe for the log, at most 200 characters. Out: everything from a message's first quote to its
  *  last (quoted text can hold quotes of its own, 5' 11" tall), and all after a quote left open; the user's name before
  *  "said no"; a window target, password lengths and key names; web addresses, domains, emails and paths. */
@@ -134,7 +140,7 @@ export function guardTools(tools, { log = () => {}, request = () => 0, goals = f
         last = { key, sig, same, req };
         if (!err && !blind) lastSig.set(t.name, sig);
         const msg = String(err?.message ?? err);
-        log('tool_outcome', { id, name: t.name, ok: !err, changed: err || prev == null ? null : sig !== prev, same, ms: Date.now() - t0, ...(err ? { reason: reasonOf(msg), ...(SCREEN_TOOLS.has(t.name) ? { error: errorText(msg) } : {}) } : {}) });
+        log('tool_outcome', { id, name: t.name, ok: !err, changed: err || prev == null ? null : sig !== prev, same, ms: Date.now() - t0, ...(t.name === 'open' ? { what: appWord(args) } : t.name === 'window' ? { what: `${args?.action ?? ''} ${appWord(args)}`.trim() } : {}), ...(err ? { reason: reasonOf(msg), ...(SCREEN_TOOLS.has(t.name) || LOGGED_ERRORS.has(t.name) ? { error: errorText(msg) } : {}) } : {}) });
       }
       // A goal that worked starts over (every page of a wizard ends in "Next": one goal, many pages). A check that
       // stopped the call before anything ran (ranNothing: the screenshot was out of date) isn't a try at it, for the first RAN_NOTHING_FREE in a request.

@@ -452,7 +452,7 @@ await cp('CP-8 subagents: researcher report reaches the chat; operator runs scre
     const e2 = await end2;
     assert.equal(e2.type, 'done', e2.agent?.reason);
     const opLog = fs.readFileSync(process.env.FAKE_LOG, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    assert.deepEqual([...opLog[0].tools].sort(), ['act_in_app', 'finish', 'list_windows', 'open', 'plan', 'read_window', 'take_screenshot']);
+    assert.deepEqual([...opLog[0].tools].sort(), ['act_in_app', 'finish', 'list_windows', 'open', 'plan', 'read_window', 'take_screenshot', ...(process.platform === 'linux' && process.env.HYPRLAND_INSTANCE_SIGNATURE ? ['window'] : [])]);
     assert.deepEqual(opLog.filter((l) => l.name === 'act_in_app').map((l) => l.isError), [false, false, false, true, false, false], 'the operator is loop-guarded, then both sends run');
 
     await assert.rejects(send.execute({ type: 'researcher', title: 'Bad', brief: 'x', continue: 'nope42' }), /The launch failed, so there is no agent/);

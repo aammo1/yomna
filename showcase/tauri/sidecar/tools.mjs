@@ -1,7 +1,7 @@
 // The agent's tools: screen capture, reading and working other apps (the "hands" helper), files, commands,
 // web pages and memory. Every file, command, URL and open goes through safety.mjs first.
-import { execFile, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +21,7 @@ import { deleteSkill, fetchSkills, installSkill, listSkills, readSkill, readSkil
 export const SLOW_TOOLS = new Set(['web_search', 'web_fetch', 'see_photo', 'take_screenshot', 'read_window', 'act_in_app', 'run_command', 'search_files', 'list_windows']);
 
 const HOME = os.homedir();
+const HYPRLAND = process.platform === 'linux' && !!process.env.HYPRLAND_INSTANCE_SIGNATURE;
 export const expand = (p) => path.resolve(String(p).replace(/^~(?=$|\/|\\)/, HOME));
 /** A tool's path → itself when it's full (or starts with ~), else joined to dir. */
 export const resolveAt = (p, dir) => { const s = String(p ?? ''); return /^~(?=$|\/|\\)/.test(s) || path.isAbsolute(s) || /^[a-z]:[\\/]/i.test(s) ? s : path.join(dir, s); };
@@ -34,6 +35,31 @@ export const run = (cmd, args, { onLine, ...opts } = {}) => new Promise((res) =>
   child.stderr.on('data', (d) => {
     buf += d;
     for (let k; (k = buf.indexOf('\n')) >= 0; buf = buf.slice(k + 1)) { try { onLine(buf.slice(0, k)); } catch { /* a listener's fault never fails the command */ } }
+  });
+});
+/** run_command's runner: like run(), but done when the shell exits, not when its output closes. An app started in
+ *  the background ("firefox &", "hyprctl dispatch exec …") inherits that output and would hold it for as long as it
+ *  runs: the call hung for 60 s and then killed the app. The app is left running, detached. */
+export const runShell = (cmd, args, { timeout = 60_000, grace = 300, ...opts } = {}) => new Promise((res) => {
+  let out = '', err = '', done = false, child;
+  const finish = (e) => {
+    if (done) return; done = true; clearTimeout(t);
+    child?.stdout?.destroy(); child?.stderr?.destroy(); child?.unref?.();
+    res({ err: e, stdout: out, stderr: err });
+  };
+  const t = setTimeout(() => { try { child.kill(); } catch {} finish(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT', killed: true })); }, timeout);
+  try { child = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); } catch (e) { return finish(e); }
+  const cap = (s, d) => (s.length > 8 << 20 ? s : s + d);
+  child.stdout.on('data', (d) => { out = cap(out, d); });
+  child.stderr.on('data', (d) => { err = cap(err, d); });
+  child.on('error', (e) => finish(e));
+  child.on('exit', (code, signal) => {
+    const e = code === 0 ? null : Object.assign(new Error(`exit ${code ?? signal}`), { code: code ?? signal, signal });
+    // Output still in flight once it exits: the rest arrives within moments, unless a background app holds it.
+    let left = 2;
+    const closed = () => { if (--left === 0) finish(e); };
+    child.stdout.once('close', closed); child.stderr.once('close', closed);
+    setTimeout(() => finish(e), grace).unref?.();
   });
 });
 // Windows "open": Start-Process gets the target (and the app to open it in) through environment variables, so
@@ -76,24 +102,148 @@ export function parseDesktopEntry(text) {
  *  Hidden ones and anything that isn't an app never match. Best first: the name shown in the menus, the file's
  *  id (or its last part: "nautilus"), the kind of app ("Web Browser"), then a name holding every word asked for
  *  ("chrome" finds "Google Chrome"). */
-export function findDesktopApp(apps, name) {
+export function findDesktopApp(apps, name, defaults = linuxDefaults()) {
   const want = String(name).trim().toLowerCase().replace(/\.desktop$/, '');
   if (!want) return null;
   const words = want.split(/\s+/);
   const usable = apps.filter(({ entry: e }) => (e.Type ?? 'Application') === 'Application' && e.Exec && e.NoDisplay !== 'true' && e.Hidden !== 'true');
   const low = (s) => String(s ?? '').toLowerCase();
+  // A kind of app ("terminal", "browser") is the one of that category: Omarchy's terminal is Ghostty, not "Terminal".
+  // The user's chosen default of that kind comes first (xdg-terminals.list, xdg-settings).
+  const kind = APP_KINDS.find(([re]) => re.test(want))?.[1];
+  const preferred = kind ? (defaults[kind] ?? []) : [];
+  for (const id of preferred) { const hit = usable.find((a) => `${a.id}.desktop` === id); if (hit) return hit; }
   const tests = [
     (a) => low(a.entry.Name) === want,
     (a) => low(a.id) === want || low(a.id).split('.').pop() === want,
     (a) => low(a.entry.GenericName) === want,
     (a) => words.every((w) => low(a.entry.Name).split(/[^a-z0-9+]+/).includes(w)),
+    (a) => !!kind && String(a.entry.Categories ?? '').split(';').includes(kind),
+    // Misheard by voice ("Zan Browser" for Zen Browser): a name within a letter or two.
+    (a) => want.length >= 4 && editDistance(low(a.entry.Name), want) <= (want.length >= 8 ? 2 : 1),
+    (a) => words.length === 1 && want.length >= 4 && editDistance(low(a.entry.Name).split(/\s+/)[0], want) <= 1,
   ];
   for (const t of tests) { const hit = usable.find(t); if (hit) return hit; }
   return null;
 }
 
+/** The user's default apps by category, as .desktop ids: { TerminalEmulator: [...], WebBrowser: [...] }. */
+let defaultsCache = null;
+export function linuxDefaults() {
+  if (process.platform !== 'linux') return {};
+  if (defaultsCache) return defaultsCache;
+  const out = {};
+  const cfg = process.env.XDG_CONFIG_HOME || path.join(HOME, '.config');
+  try {
+    out.TerminalEmulator = readFileSync(path.join(cfg, 'xdg-terminals.list'), 'utf8').split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.desktop') && !l.startsWith('#'));
+  } catch {}
+  try {
+    const b = execFileSync('xdg-settings', ['get', 'default-web-browser'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (b) out.WebBrowser = [b];
+  } catch {}
+  return (defaultsCache = out);
+}
+
+const APP_KINDS = [
+  [/^(?:the )?(?:terminal|term|console|shell|command line)$/, 'TerminalEmulator'],
+  [/^(?:the )?(?:web )?browser$/, 'WebBrowser'],
+  [/^(?:the )?(?:file manager|files|file browser)$/, 'FileManager'],
+  [/^(?:the )?calculator$/, 'Calculator'],
+  [/^(?:the )?(?:text editor|editor)$/, 'TextEditor'],
+];
+
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// ---------- Hyprland windows ----------
+/** The open windows: [{ address, class, initialClass, title, workspace, focused }]; [] off Hyprland or on error. */
+export async function hyprClients() {
+  if (!HYPRLAND) return [];
+  const r = await run('hyprctl', ['clients', '-j'], { timeout: 3000 });
+  if (r.err) return [];
+  try {
+    const active = await run('hyprctl', ['activewindow', '-j'], { timeout: 3000 }).then((a) => { try { return JSON.parse(a.stdout).address; } catch { return null; } });
+    return JSON.parse(r.stdout).filter((c) => c.mapped !== false && c.class !== 'yomna' && !/yomna/i.test(c.initialClass ?? ''))
+      .map((c) => ({ address: c.address, class: c.class ?? '', initialClass: c.initialClass ?? '', title: c.title ?? '', workspace: c.workspace?.id, focused: c.address === active }));
+  } catch { return []; }
+}
+
+/** One Hyprland dispatch: the Lua form first (Hyprland 0.55+ with a Lua config takes `hl.dsp.…(…)`), then the classic
+ *  `dispatch <name> <args>` for older setups. → { ok, said } */
+export async function hyprDispatch(lua, classic) {
+  const said = [];
+  for (const args of [['dispatch', lua], ['dispatch', ...classic]]) {
+    const r = await run('hyprctl', args, { timeout: 3000 });
+    const out = (r.stdout || r.stderr || '').trim();
+    if (!r.err && /^ok\b/i.test(out)) return { ok: true, said: out };
+    said.push(out.split('\n')[0]);
+  }
+  return { ok: false, said: said.join(' / ') };
+}
+const luaStr = (s) => JSON.stringify(String(s));
+export const hyprCmd = {
+  focus: (addr) => [`hl.dsp.focus({ window = ${luaStr(`address:${addr}`)} })`, ['focuswindow', `address:${addr}`]],
+  close: (addr) => [`hl.dsp.window.close({ window = ${luaStr(`address:${addr}`)} })`, ['closewindow', `address:${addr}`]],
+  move: (addr, ws) => [`hl.dsp.window.move({ workspace = ${luaStr(ws)}, follow = false, window = ${luaStr(`address:${addr}`)} })`, ['movetoworkspacesilent', `${ws},address:${addr}`]],
+  fullscreen: (addr) => [`hl.dsp.window.fullscreen({ mode = "fullscreen", action = "toggle", window = ${luaStr(`address:${addr}`)} })`, ['fullscreen', '0']],
+  workspace: (ws) => [`hl.dsp.focus({ workspace = ${luaStr(ws)} })`, ['workspace', ws]],
+};
+
+const norm = (s) => String(s ?? '').toLowerCase().replace(/\.desktop$/, '').trim();
+/** Names a window may go by for an app: its class, the last part of a dotted class (com.mitchellh.ghostty → ghostty). */
+const winNames = (w) => [w.class, w.initialClass].map(norm).flatMap((c) => [c, c.split('.').pop()]).filter(Boolean);
+
+/** The window that best fits what was said ("zen", "Zen Browser", "terminal", "Files", "discord"), or null. An app
+ *  name is mapped through its .desktop file (Files → org.gnome.Nautilus) and the kinds (terminal → their default). */
+export function matchWindow(wins, want, apps = []) {
+  const w = norm(want);
+  if (!w || !wins.length) return null;
+  const app = apps.length ? findDesktopApp(apps, want) : null;
+  const ids = app ? [app.id, app.entry.StartupWMClass, String(app.entry.Exec ?? '').split(/\s+/)[0].split('/').pop(), app.entry.Name].map(norm).filter(Boolean) : [];
+  const byFocus = [...wins].sort((a, b) => Number(b.focused) - Number(a.focused));
+  const tests = [
+    (x) => winNames(x).includes(w),
+    (x) => ids.some((id) => winNames(x).includes(id) || winNames(x).includes(id.split('.').pop())),
+    (x) => winNames(x).some((n) => n.length >= 3 && (n.includes(w) || w.includes(n))),
+    (x) => norm(x.title).includes(w),
+    (x) => w.length >= 4 && winNames(x).some((n) => editDistance(n, w) <= 1),
+  ];
+  for (const t of tests) { const hit = byFocus.find(t); if (hit) return hit; }
+  return null;
+}
+
+/** After starting an app: wait up to `ms` for its window, so the next step (a screenshot, a click) finds it. */
+async function waitForWindow(before, app, ms = 6000) {
+  const known = new Set(before.map((w) => w.address));
+  for (const end = Date.now() + ms; Date.now() < end;) {
+    await new Promise((r) => setTimeout(r, 250));
+    const now = await hyprClients();
+    const fresh = now.filter((w) => !known.has(w.address));
+    const hit = (app ? matchWindow(fresh, app.entry.Name ?? app.id, [app]) : null) ?? fresh[0];
+    if (hit) return hit;
+    // Already running and it just came to the front (single-instance apps like Discord, Zen).
+    const front = app ? matchWindow(now.filter((w) => w.focused), app.entry.Name ?? app.id, [app]) : null;
+    if (front) return front;
+  }
+  return null;
+}
+
+/** Installed app names, for "no app called X" errors, so the model can pick the right one instead of guessing. */
+export async function appNames(limit = 60) {
+  const apps = await desktopApps();
+  return [...new Set(apps.filter(({ entry: e }) => (e.Type ?? 'Application') === 'Application' && e.Exec && e.NoDisplay !== 'true' && e.Hidden !== 'true').map((a) => a.entry.Name).filter(Boolean))].sort().slice(0, limit);
+}
+
 /** Every app in the XDG application folders (the user's own first, so theirs wins over a system one of the same id). */
-async function desktopApps() {
+export async function desktopApps() {
   const dataHome = process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share');
   const dirs = [dataHome, ...(process.env.XDG_DATA_DIRS || '/usr/local/share:/usr/share').split(':'), path.join(HOME, '.local/share/flatpak/exports/share'), '/var/lib/flatpak/exports/share', '/var/lib/snapd/desktop']
     .filter(Boolean).map((d) => path.join(d, 'applications'));
@@ -139,10 +289,12 @@ export const launch = (cmd, args, opts = {}) => new Promise((res) => {
 async function openLinuxApp(name) {
   const app = findDesktopApp(await desktopApps(), name);
   if (!app) return { err: new Error('not found'), stdout: '', stderr: `Unable to find application named "${name}"` };
+  const before = await hyprClients();
   let r = await launch('gio', ['launch', app.file]);
   if (r.err?.code === 'ENOENT') r = await launch('gtk-launch', [app.id]);
   if (r.err?.code === 'ENOENT') return { err: r.err, stdout: '', stderr: `Found ${app.entry.Name}, but this computer has neither gio nor gtk-launch to start it.` };
-  return { ...r, app };
+  const win = !r.err && HYPRLAND ? await waitForWindow(before, app) : null;
+  return { ...r, app, win, waited: HYPRLAND };
 }
 const actionsOff = `File edits and commands are switched off. Tell the user to turn on "Allow File Edits & Commands" in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'} menu if they want this.`;
 
@@ -1115,7 +1267,7 @@ A drawing stays until the user clears it or the window changes; your next drawin
       },
     },
     {
-      name: 'run_command', description: `Run a shell command in ${where} (in the user's second brain instead, when one is set) and return its output. Use it for what the other tools can't do (counting, sorting, wc, mdfind, git, moving or copying); to open a file, folder, app or link use the open tool, which needs no yes. Prefer write_file for creating or editing files (several files: one write_file call each, in the same turn); never edit with sed -i or tee, and never make files in a shell loop (for/while), which always needs a yes. A > redirect into a new file is fine; overwriting an existing file, and commands that change things, make the user confirm first, which is slow.`,
+      name: 'run_command', description: `Run a shell command in ${where} (in the user's second brain instead, when one is set) and return its output. Use it for what the other tools can't do (counting, sorting, wc, mdfind, git, moving or copying); to open a file, folder, app or link use the open tool, which needs no yes. Prefer write_file for creating or editing files (several files: one write_file call each, in the same turn); never edit with sed -i or tee, and never make files in a shell loop (for/while), which always needs a yes. A > redirect into a new file is fine; overwriting an existing file, and commands that change things, make the user confirm first, which is slow.${HYPRLAND ? ' Never use it to open, switch to, close or move apps: the open and window tools do that and check it worked.' : ''}`,
       parameters: z.object({ command: z.string() }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
       execute: async ({ command }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
@@ -1126,7 +1278,7 @@ A drawing stays until the user clears it or the window changes; your next drawin
           throw new Error(`${userName} said no, so the command didn't run.`);
         }
         const [sh, shArgs, shOpts] = shellFor(command);
-        const r = await run(sh, shArgs, { ...shOpts, cwd, env: { ...process.env, ...GIT_SAFE } });
+        const r = await (process.platform === 'win32' ? run : runShell)(sh, shArgs, { ...shOpts, cwd, env: { ...process.env, ...GIT_SAFE } });
         const out = clip((r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')).trim() || '(no output)', 12_000);
         if (r.err && r.err.code !== 0) throw new Error(`Exit ${r.err.code ?? r.err.signal}\n${out}`);
         return out;
@@ -1136,8 +1288,11 @@ A drawing stays until the user clears it or the window changes; your next drawin
     createLocalWebFetchTool(),
     {
       name: 'open', description: 'Open a website, a file or folder, or an app by name (e.g. "Safari", "https://example.com", "~/Documents"). Links open in the default browser; set app to open one in a particular browser or app (e.g. app "Safari" when the user says "in Safari").',
-      parameters: z.object({ target: z.string(), app: z.string().optional() }),
-      execute: async ({ target, app }) => {
+      parameters: z.object({ target: z.string().optional(), app: z.string().optional(), url: z.string().optional(), path: z.string().optional() }),
+      execute: async ({ target, app, url, path: where }) => {
+        // Voice models often send only app ("open Firefox" → { app: 'Firefox' }), or invent url/path: that's the thing to open.
+        target = [target, url, where].map((x) => String(x ?? '').trim()).find(Boolean) ?? '';
+        if (!target) { if (!String(app ?? '').trim()) throw new Error('Say what to open: target is an app name, a link, or a file or folder.'); target = app; app = undefined; }
         let t = String(target).trim();
         // A bare web address ("example.com", "www.bbc.co.uk/news") is a link, not an app name: it used to fail as
         // "Unable to find application named example.com" and cost a retry. App bundles ("Notes.app") stay apps.
@@ -1156,12 +1311,53 @@ A drawing stays until the user clears it or the window changes; your next drawin
         else if (isUrl || isPath) r = await launch('xdg-open', [isPath ? expand(t) : t]);
         else r = await openLinuxApp(t);
         // Not installed: say so plainly, so the model doesn't go hunting for it with scripts (which need a yes each).
-        if (r.err && /Unable to find application/i.test(r.stderr)) throw new Error(`There's no app called "${inApp.length ? app : t}" on ${THIS_COMPUTER} (not installed, or it has another name). Don't look for it another way; tell ${userName} and carry on with the rest.`);
+        if (r.err && /Unable to find application/i.test(r.stderr)) {
+          const names = process.platform === 'linux' ? await appNames().catch(() => []) : [];
+          throw new Error(`There's no app called "${inApp.length ? app : t}" on ${THIS_COMPUTER} (not installed, or it has another name).${names.length ? ` Installed apps: ${names.join(', ')}. If one of these is clearly what they meant (a misheard name, or the same kind of app), open it instead; otherwise` : ' Don\'t look for it another way;'} tell ${userName} and carry on with the rest.`);
+        }
         if (r.err) throw new Error(r.stderr.trim() || `Couldn't open ${t}.`);
         if (lastShot) lastShot.used = true;
+        if (r.waited && r.app) {
+          if (!r.win) return `Started ${r.app.entry.Name}, but no window of it showed up within 6 seconds (it may still be loading, or it runs without a window). Check with take_screenshot target 'screen' before saying it's open.`;
+          return `Opened ${r.app.entry.Name}: its window "${r.win.title}" is on workspace ${r.win.workspace} (app id for other tools: ${r.win.class}).`;
+        }
         return `Opened ${t}${inApp.length ? ` in ${app}` : ''}.`;
       },
     },
+    ...(HYPRLAND ? [{
+      name: 'window',
+      description: "Work with the open app windows on this Hyprland desktop. action: 'list' (every window: app id, title, workspace), 'focus' (switch to it: brings it to the front, going to its workspace), 'close' (closes it; the app may ask to save), 'fullscreen' (toggles), 'move' (send it to workspace), 'workspace' (go to workspace N, no app needed). app: what they called it, e.g. 'zen', 'the terminal', 'Discord', 'Files', or a word of its title. Use this, never shell commands, for switching, closing and moving apps. To start an app that isn't open, use the open tool.",
+      parameters: z.object({ action: z.enum(['list', 'focus', 'close', 'fullscreen', 'move', 'workspace']), app: z.string().optional(), workspace: z.union([z.number(), z.string()]).optional() }),
+      execute: async ({ action, app, workspace }) => {
+        const wins = await hyprClients();
+        const line = (w) => `${w.class} "${w.title}" on workspace ${w.workspace}${w.focused ? ' (in front)' : ''}`;
+        if (action === 'list') return wins.length ? wins.map(line).join('\n') : 'No app windows are open.';
+        const ws = String(workspace ?? '').trim();
+        if (action === 'workspace') {
+          if (!/^(?:\d+|[+-]\d+|e[+-]\d+|special(?::\S+)?|previous)$/.test(ws)) throw new Error('Give workspace as a number, like 2.');
+          const r = await hyprDispatch(...hyprCmd.workspace(ws));
+          if (!r.ok) throw new Error(`Couldn't go to workspace ${ws}: ${r.said}`);
+          agentChangesScreen(); lastRead = null;
+          return `On workspace ${ws} now.`;
+        }
+        if (!String(app ?? '').trim()) throw new Error(`Say which app: ${wins.map((w) => w.class).join(', ') || 'none are open'}.`);
+        const w = matchWindow(wins, app, await desktopApps().catch(() => []));
+        if (!w) throw new Error(`No open window matches "${app}". Open windows: ${wins.map(line).join('; ') || 'none'}. If it isn't open, use the open tool.`);
+        if (action !== 'focus' && !allowActions()) throw new Error(actionsOff);
+        if (action === 'close' && !(await confirm(`Close ${w.class} ("${w.title.slice(0, 60)}")?`))) throw new Error(`${userName} said no, so it stays open.`);
+        if (action === 'move' && !/^\d+$/.test(ws)) throw new Error('Give workspace as a number, like 2.');
+        if (action === 'fullscreen' && !(await hyprDispatch(...hyprCmd.focus(w.address))).ok) throw new Error(`Couldn't switch to ${w.class}.`);
+        const r = await hyprDispatch(...(action === 'move' ? hyprCmd.move(w.address, ws) : hyprCmd[action](w.address)));
+        if (!r.ok) throw new Error(`hyprctl said: ${r.said || 'it failed'}`);
+        agentChangesScreen(); lastRead = null;
+        if (action === 'close') {
+          await new Promise((res) => setTimeout(res, 600));
+          const still = (await hyprClients()).some((x) => x.address === w.address);
+          return still ? `Asked ${w.class} to close, but its window is still open (it may be asking to save). Take a screenshot to see.` : `Closed ${w.class} ("${w.title}").`;
+        }
+        return action === 'focus' ? `Switched to ${line(w)}.` : action === 'move' ? `Moved ${w.class} to workspace ${ws}.` : `Toggled fullscreen for ${w.class}.`;
+      },
+    }] : []),
     {
       name: 'remember_commitment',
       description: `Save something ${userName} has committed to doing, or anything they ask to be reminded about, so you can remind them at the right moment. Use it whenever they say they will do something or say "remind me". kind: 'reminder' for a plain "remind me to X at/in …" (it clears itself once the nudge is given), 'commitment' (default) for something they say they'll do or finish ("I'll finish the slides by Friday"), which stays open until they say it's done. due: a relative time like "in 90s", "in 5m", "in 1h30m" or "in 2 days" (best for short timers), or a local time YYYY-MM-DDTHH:mm:ss, YYYY-MM-DDTHH:mm, or YYYY-MM-DD if only the day is known; omit if there's no time at all. Resolve words like "Thursday", "at 2" or "tonight" from the timestamp on their message. repeat: only when they ask for it again and again ("every morning", "every weekday at 9", "every 2 hours", "on Mondays and Thursdays"): one of daily, weekdays, weekends, weekly, monthly, yearly, "every N minutes|hours|days|weeks|months" (at least 5 minutes), or days like "mon,wed,fri". It needs due, set to the first time (e.g. tomorrow 09:00 for "every morning at 9"). A repeating 'reminder' moves to its next time each time it fires; a repeating 'commitment' (a habit they want held to, like the gym) moves on when they mark it done. One saved item covers the whole series: never save one per day.`,

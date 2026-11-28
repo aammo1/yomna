@@ -21,9 +21,9 @@ const returnsOf = (a) => (RETURNS.includes(a?.returns) ? a.returns : DEFAULT_RET
 // the exception: a long task in other apps, handed over from a Live call, with the chat's own screen tools (their
 // allowActions and Allow prompts come with them, through agentrun.mjs) and nothing else.
 const WORK_TOOLS = ['read_file', 'list_files', 'search_files', 'write_file', 'run_command', 'web_search', 'web_fetch'];
-export const OPERATOR_TOOLS = ['take_screenshot', 'list_windows', 'read_window', 'act_in_app', 'open'];
+export const OPERATOR_TOOLS = ['take_screenshot', 'list_windows', 'read_window', 'act_in_app', 'open', 'window'];
 export const TYPE_TOOLS = { maker: WORK_TOOLS, researcher: WORK_TOOLS, organizer: WORK_TOOLS, operator: OPERATOR_TOOLS };
-export const SCREEN_TOOLS = ['take_screenshot', 'list_windows', 'read_window', 'act_in_app', 'draw', 'open', 'see_photo',
+export const SCREEN_TOOLS = ['take_screenshot', 'list_windows', 'read_window', 'act_in_app', 'draw', 'open', 'window', 'see_photo',
   'remember_commitment', 'update_commitment', 'forget_fact', 'plan_steps', 'show_list', 'list_commitments', 'about_yomna'];
 /** The tools an agent of this type gets, from the full set createTools made. */
 export const toolsFor = (type, all) => all.filter((t) => (TYPE_TOOLS[type] ?? []).includes(t.name) && (type === 'operator' || !SCREEN_TOOLS.includes(t.name)));

@@ -274,12 +274,8 @@ fn progress(v: Value) {
 fn move_pointer(x: i32, y: i32) -> Result<(), String> {
     if wayland_session() {
         if is_hyprland() {
-            let out = Command::new("hyprctl")
-                .args(["dispatch", "movecursor", &x.to_string(), &y.to_string()])
-                .stdin(Stdio::null())
-                .output()
-                .map_err(|e| format!("failed to run hyprctl movecursor: {e}"))?;
-            if out.status.success() {
+            let (xs, ys) = (x.to_string(), y.to_string());
+            if crate::hyprland::hypr_dispatch(&format!("hl.dsp.cursor.move({{ x = {x}, y = {y} }})"), &["movecursor", &xs, &ys]).is_ok() {
                 sleep(Duration::from_millis(30));
                 return Ok(());
             }

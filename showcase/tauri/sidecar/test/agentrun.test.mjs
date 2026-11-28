@@ -102,7 +102,9 @@ const c = await mgr.start({ type: 'operator', title: 'YouTube info cards', brief
 const endC = await doneC;
 const logC = fs.readFileSync(process.env.FAKE_LOG, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 assert.equal(endC.type, 'done', `${endC.agent.reason}\n${JSON.stringify(logC, null, 1)}`);
-assert.deepEqual([...logC[0].tools].sort(), ['act_in_app', 'finish', 'list_windows', 'open', 'plan', 'read_window', 'take_screenshot']);
+// window (switch, close, move apps) exists only on a Hyprland desktop.
+const hypr = process.platform === 'linux' && !!process.env.HYPRLAND_INSTANCE_SIGNATURE;
+assert.deepEqual([...logC[0].tools].sort(), ['act_in_app', 'finish', 'list_windows', 'open', 'plan', 'read_window', 'take_screenshot', ...(hypr ? ['window'] : [])]);
 const acts = logC.filter((l) => l.name === 'act_in_app');
 assert.deepEqual(acts.slice(0, 4).map((l) => l.isError), [false, false, false, true], 'the fourth identical scroll is refused');
 // Regression: the operator's tools never start a new request, so one Allow on a Send used to cover every later Send in
