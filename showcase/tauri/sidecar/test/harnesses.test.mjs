@@ -132,26 +132,39 @@ test('detectHarnesses recommends opencode when agy is missing and opencode is au
   }
 });
 
-test('safety flag mapping enforces read-only when allowActions=false and edit/auto when true', () => {
+test('safety flag mapping enforces read-only when allowActions=false and edit/skipAllow auto when true', () => {
   // Antigravity (agy)
-  const agySafe = buildAgyArgs({ allowActions: false, secondBrainDirs: ['/notes'], sessionId: 'c-1' });
+  const agySafe = buildAgyArgs({ allowActions: false, skipAllow: true, secondBrainDirs: ['/notes'], sessionId: 'c-1' });
   assert.ok(agySafe.includes('--mode') && agySafe[agySafe.indexOf('--mode') + 1] === 'plan');
   assert.ok(agySafe.includes('--sandbox'));
+  assert.equal(agySafe.includes('--dangerously-skip-permissions'), false);
   assert.ok(agySafe.includes('--conversation') && agySafe[agySafe.indexOf('--conversation') + 1] === 'c-1');
   assert.ok(agySafe.includes('--add-dir') && agySafe[agySafe.indexOf('--add-dir') + 1] === '/notes');
 
   const agyEdit = buildAgyArgs({ allowActions: true });
   assert.ok(agyEdit.includes('--mode') && agyEdit[agyEdit.indexOf('--mode') + 1] === 'accept-edits');
   assert.equal(agyEdit.includes('--sandbox'), false);
+  assert.equal(agyEdit.includes('--dangerously-skip-permissions'), false);
+
+  const agyFull = buildAgyArgs({ allowActions: true, skipAllow: true });
+  assert.ok(agyFull.includes('--mode') && agyFull[agyFull.indexOf('--mode') + 1] === 'auto');
+  assert.ok(agyFull.includes('--dangerously-skip-permissions'));
+  assert.equal(agyFull.includes('--sandbox'), false);
 
   // Claude Code
-  const claudeSafe = buildClaudeArgs({ allowActions: false, mcpConfigPath: '/tmp/mcp.json', sessionId: 's-1' });
+  const claudeSafe = buildClaudeArgs({ allowActions: false, skipAllow: true, mcpConfigPath: '/tmp/mcp.json', sessionId: 's-1' });
   assert.equal(claudeSafe[claudeSafe.indexOf('--permission-mode') + 1], 'plan');
   assert.equal(claudeSafe[claudeSafe.indexOf('--mcp-config') + 1], '/tmp/mcp.json');
+  assert.equal(claudeSafe[claudeSafe.indexOf('--allowedTools') + 1], 'mcp__yomna-desktop');
   assert.equal(claudeSafe[claudeSafe.indexOf('--resume') + 1], 's-1');
 
   const claudeEdit = buildClaudeArgs({ allowActions: true });
   assert.equal(claudeEdit[claudeEdit.indexOf('--permission-mode') + 1], 'acceptEdits');
+  assert.equal(claudeEdit.includes('--allowedTools'), false);
+
+  const claudeFull = buildClaudeArgs({ allowActions: true, skipAllow: true, mcpConfigPath: '/tmp/mcp.json' });
+  assert.equal(claudeFull[claudeFull.indexOf('--permission-mode') + 1], 'bypassPermissions');
+  assert.equal(claudeFull[claudeFull.indexOf('--allowedTools') + 1], 'mcp__yomna-desktop');
 
   // OpenCode
   const ocSafe = buildOpenCodeArgs({ prompt: 'hi', allowActions: false, sessionId: 'oc-1' });

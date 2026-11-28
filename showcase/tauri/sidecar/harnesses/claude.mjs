@@ -14,12 +14,15 @@ import {
 
 export function buildClaudeArgs({
   allowActions = false,
+  skipAllow = false,
   secondBrainDirs = [],
   mcpConfigPath,
   sessionId,
   systemPrompt,
   model,
 } = {}) {
+  // Full-auto applies only when both "Allow File Edits & Commands" and "Skip Allow prompts" are enabled.
+  const full = !!allowActions && !!skipAllow;
   const args = [
     '-p',
     '--output-format',
@@ -27,9 +30,11 @@ export function buildClaudeArgs({
     '--verbose',
     '--include-partial-messages',
     '--permission-mode',
-    allowActions ? 'acceptEdits' : 'plan',
+    !allowActions ? 'plan' : full ? 'bypassPermissions' : 'acceptEdits',
   ];
-  if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath);
+  if (mcpConfigPath) {
+    args.push('--mcp-config', mcpConfigPath, '--allowedTools', 'mcp__yomna-desktop');
+  }
   if (sessionId) args.push('--resume', sessionId);
   if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
   if (model) args.push('--model', model);
@@ -109,6 +114,7 @@ export class ClaudeAdapter extends HarnessAdapter {
     mcpConfigPath,
     mcpServer,
     allowActions = false,
+    skipAllow = false,
     sessionId,
     signal,
     hangTimeoutOverride,
@@ -136,6 +142,7 @@ export class ClaudeAdapter extends HarnessAdapter {
     try {
       const args = buildClaudeArgs({
         allowActions,
+        skipAllow,
         secondBrainDirs,
         mcpConfigPath: tempMcp?.path ?? mcpConfigPath,
         sessionId,

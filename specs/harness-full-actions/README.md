@@ -42,4 +42,4 @@ graph TD
 - [x] [task-03-skipallow-plumbing](./tasks/task-03-skipallow-plumbing.md): Plumb `skipAllow` into every harness `send()` call
 
 ### Wave 2
-- [ ] [task-04-harness-full-auto-flags](./tasks/task-04-harness-full-auto-flags.md): Full-auto permission flags for agy and claude
+- [x] [task-04-harness-full-auto-flags](./tasks/task-04-harness-full-auto-flags.md): Full-auto permission flags for agy and claude

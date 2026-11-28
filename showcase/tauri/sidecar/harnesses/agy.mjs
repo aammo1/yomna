@@ -36,15 +36,22 @@ export const agyMcpAddArgs = ({ name, command, args }) => ['mcp', 'add', name, '
 export function buildAgyArgs({
   prompt = '',
   allowActions = false,
+  skipAllow = false,
   secondBrainDirs = [],
   settingsPath,
   sessionId,
   model,
 } = {}) {
+  // Full-auto applies only when both "Allow File Edits & Commands" and "Skip Allow prompts" are enabled.
+  const full = !!allowActions && !!skipAllow;
   const args = [
     '--output-format',
     'stream-json',
-    ...(allowActions ? ['--mode', 'accept-edits'] : ['--mode', 'plan', '--sandbox']),
+    ...(!allowActions
+      ? ['--mode', 'plan', '--sandbox']
+      : full
+        ? ['--mode', 'auto', '--dangerously-skip-permissions']
+        : ['--mode', 'accept-edits']),
   ];
   if (sessionId) args.push('--conversation', sessionId);
   if (model) args.push('--model', model);
@@ -145,6 +152,7 @@ export class AgyAdapter extends HarnessAdapter {
     mcpConfigPath,
     mcpServer,
     allowActions = false,
+    skipAllow = false,
     sessionId,
     signal,
     hangTimeoutOverride,
@@ -178,6 +186,7 @@ export class AgyAdapter extends HarnessAdapter {
       const args = buildAgyArgs({
         prompt: promptText,
         allowActions,
+        skipAllow,
         secondBrainDirs,
         sessionId,
         model: this.model,
