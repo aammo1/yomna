@@ -243,6 +243,58 @@ export const DESKTOP_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'use_skill',
+    description: 'Read a learned, installed, or second-brain skill (SKILL.md or one of its files) by name or slug.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 60 },
+        file: { type: 'string', maxLength: 200 },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'save_skill',
+    description: 'Save or update a reusable how-to skill in ~/Yomna/Skills.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 60 },
+        description: { type: 'string', minLength: 1, maxLength: 200 },
+        steps: { type: 'string', minLength: 1, maxLength: 6000 },
+      },
+      required: ['name', 'description', 'steps'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'forget_skill',
+    description: 'Delete a learned skill from ~/Yomna/Skills by name or slug.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 60 },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'install_skill',
+    description: 'Install a skill from a GitHub repo, skills.sh page, or SKILL.md URL (always confirms with the user first).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', minLength: 3, maxLength: 400 },
+        skill: { type: 'string', maxLength: 80 },
+      },
+      required: ['source'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const TOOL_MAP = new Map(DESKTOP_TOOLS.map((t) => [t.name, t]));

@@ -180,12 +180,13 @@ test('mcp-desktop bridge + stdio relay serves initialize, tools/list, tools/call
     assert.deepEqual(ping.result, {});
 
     const listed = await client.request(3, 'tools/list');
-    assert.equal(listed.result.tools.length, 16);
+    assert.equal(listed.result.tools.length, 20);
     const names = listed.result.tools.map((t) => t.name);
     for (const expected of [
       'take_screenshot', 'area_crop', 'draw', 'list_windows', 'read_window', 'act_in_app',
       'remember_commitment', 'update_commitment', 'list_commitments', 'forget_fact',
       'show_list', 'snooze_reminder', 'schedule_job', 'list_jobs', 'start_focus', 'stop_focus',
+      'use_skill', 'save_skill', 'forget_skill', 'install_skill',
     ]) {
       assert.ok(names.includes(expected), `missing tool ${expected}`);
     }
