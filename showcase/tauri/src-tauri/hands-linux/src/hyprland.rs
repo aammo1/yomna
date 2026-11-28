@@ -77,6 +77,7 @@ struct HyprClient {
     address: String,
     mapped: bool,
     hidden: bool,
+    floating: bool,
     at: [i32; 2],
     size: [i32; 2],
     workspace: HyprWorkspace,
@@ -95,6 +96,7 @@ impl Default for HyprClient {
             address: String::new(),
             mapped: true,
             hidden: false,
+            floating: false,
             at: [0, 0],
             size: [0, 0],
             workspace: HyprWorkspace::default(),
@@ -170,6 +172,10 @@ fn parse_numeric_id(id: &str) -> Option<u64> {
 
 fn client_to_win(c: HyprClient, exe_lookup: bool) -> Option<Win> {
     if c.address.is_empty() || !c.mapped || c.hidden || c.size[0] <= 0 || c.size[1] <= 0 {
+        return None;
+    }
+    // Skip tiny floating tooltip/popup sub-windows (e.g. Zen/Firefox 470x61 URL hover tooltips).
+    if c.floating && (c.size[0] < 120 || c.size[1] < 120) {
         return None;
     }
     let class = if !c.class.is_empty() {

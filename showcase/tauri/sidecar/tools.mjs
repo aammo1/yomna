@@ -164,21 +164,31 @@ function editDistance(a, b) {
 }
 
 // ---------- act_in_app calls in the wrong shape ----------
-const ACT_VERBS = ['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait'];
+const ACT_VERBS = ['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait', 'fullscreen', 'close', 'move'];
 // The field a verb's one value goes in ("click_text: Save" → { do: 'click_text', text: 'Save' }).
-const VERB_FIELD = { click_text: 'text', type: 'text', key: 'key', scroll: 'direction', wait: 'seconds', click: 'id', focus: 'field', fill: 'field', choose: 'field', set: 'field' };
+const VERB_FIELD = { click_text: 'text', type: 'text', key: 'key', scroll: 'direction', wait: 'seconds', click: 'id', focus: 'field', fill: 'field', choose: 'field', set: 'field', move: 'workspace' };
 const unquote = (s) => String(s).trim().replace(/^(['"])(.*)\1$/, '$2').trim();
-/** A step written as code inside a string: "{do: 'click_text', text: '7'}" or '{"do":"key","key":"return"}'. */
-function looseObject(str) {
+/** A step (or comma-separated list of steps) written as code inside a string:
+ *  "{do: 'click_text', text: '7'}" or '{"do":"fill",...}, {"do":"key","key":"return"}'. */
+function looseObjects(str) {
   const t = String(str).trim();
   if (!/^\{[\s\S]*\}$/.test(t)) return null;
-  try { return JSON.parse(t); } catch {}
+  const parseOneOrMany = (s) => {
+    try { return [JSON.parse(s)]; } catch {}
+    try {
+      const arr = JSON.parse(`[${s}]`);
+      if (Array.isArray(arr) && arr.every((o) => o && typeof o === 'object')) return arr;
+    } catch {}
+    return null;
+  };
+  const direct = parseOneOrMany(t);
+  if (direct) return direct;
   // Single-quoted strings → double-quoted (escaping inner double quotes), bare keys → quoted keys.
   const json = t
     .replace(/'((?:[^'\\]|\\.)*)'/g, (_, s) => JSON.stringify(s.replace(/\\'/g, "'")))
     .replace(/([{,]\s*)([A-Za-z_][\w]*)\s*:/g, '$1"$2":')
     .replace(/,\s*}/g, '}');
-  try { return JSON.parse(json); } catch { return null; }
+  return parseOneOrMany(json);
 }
 function stepFrom(verb, value) {
   const v = String(verb).trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -199,9 +209,9 @@ export function normalizeActArgs(raw) {
       try { v = JSON.parse(v); } catch {}
     }
     return Array.isArray(v)
-      ? v.map((x) => (typeof x === 'string' ? looseObject(x) ?? x : x))
+      ? v.flatMap((x) => (typeof x === 'string' ? looseObjects(x) ?? [x] : [x]))
       : typeof v === 'string'
-        ? looseObject(v) ?? v
+        ? looseObjects(v) ?? v
         : v;
   };
   for (const k of ['steps', 'do', 'actions', 'action', 'step', 'commands']) {
@@ -233,6 +243,13 @@ export function normalizeActArgs(raw) {
       const str = String(it ?? '').trim();
       const m = str.match(/^([a-z_ -]+?)\s*[:=(]\s*(.*?)\)?$/i);
       if (m && stepFrom(m[1], null)) { const s = stepFrom(m[1], m[2]); if (s) out.push(s); continue; }
+      // Space-separated string steps from voice models ("type hello", "click Submit", "press return", "scroll down").
+      const sp = str.match(/^(click_text|click_on|click|tap|type|press_key|press|key|scroll|wait|focus)\s+(.+)$/i);
+      if (sp) {
+        const verb = sp[1].toLowerCase() === 'click' && !/^\d+$/.test(sp[2].trim()) ? 'click_text' : sp[1];
+        const s = stepFrom(verb, sp[2]);
+        if (s) { out.push(s); continue; }
+      }
       // ['click_text', '7']: a verb, then its value (when the next item isn't a verb itself).
       const s = stepFrom(str, null);
       if (s) {
@@ -247,15 +264,36 @@ export function normalizeActArgs(raw) {
 }
 
 // ---------- Hyprland windows ----------
-/** The open windows: [{ address, class, initialClass, title, workspace, focused }]; [] off Hyprland or on error. */
+/** The open windows: [{ address, class, initialClass, title, workspace, focused, floating, area, focusHistoryID }]; [] off Hyprland or on error. */
 export async function hyprClients() {
   if (!HYPRLAND) return [];
   const r = await run('hyprctl', ['clients', '-j'], { timeout: 3000 });
   if (r.err) return [];
   try {
     const active = await run('hyprctl', ['activewindow', '-j'], { timeout: 3000 }).then((a) => { try { return JSON.parse(a.stdout).address; } catch { return null; } });
-    return JSON.parse(r.stdout).filter((c) => c.mapped !== false && c.class !== 'yomna' && !/yomna/i.test(c.initialClass ?? ''))
-      .map((c) => ({ address: c.address, class: c.class ?? '', initialClass: c.initialClass ?? '', title: c.title ?? '', workspace: c.workspace?.id, focused: c.address === active }));
+    return JSON.parse(r.stdout)
+      .filter((c) => {
+        if (c.mapped === false || c.hidden === true) return false;
+        if (c.class === 'yomna' || /yomna/i.test(c.initialClass ?? '')) return false;
+        // Skip tiny floating tooltip/popup sub-windows (e.g. Zen/Firefox 470x61 URL hover tooltips).
+        const [w = 0, h = 0] = Array.isArray(c.size) ? c.size : [];
+        if (c.floating && (w < 120 || h < 120)) return false;
+        return true;
+      })
+      .map((c) => {
+        const [w = 0, h = 0] = Array.isArray(c.size) ? c.size : [];
+        return {
+          address: c.address,
+          class: c.class ?? '',
+          initialClass: c.initialClass ?? '',
+          title: c.title ?? '',
+          workspace: c.workspace?.id,
+          focused: c.address === active,
+          floating: !!c.floating,
+          area: w * h,
+          focusHistoryID: Number.isFinite(c.focusHistoryID) ? c.focusHistoryID : 9999,
+        };
+      });
   } catch { return []; }
 }
 
@@ -291,7 +329,11 @@ export function matchWindow(wins, want, apps = []) {
   if (!w || !wins.length) return null;
   const app = apps.length ? findDesktopApp(apps, want) : null;
   const ids = app ? [app.id, app.entry.StartupWMClass, String(app.entry.Exec ?? '').split(/\s+/)[0].split('/').pop(), app.entry.Name].map(norm).filter(Boolean) : [];
-  const byFocus = [...wins].sort((a, b) => Number(b.focused) - Number(a.focused));
+  const byFocus = [...wins].sort((a, b) =>
+    Number(!!b.focused) - Number(!!a.focused)
+    || Number(!!a.floating) - Number(!!b.floating)
+    || (a.focusHistoryID ?? 9999) - (b.focusHistoryID ?? 9999)
+    || (b.area ?? 0) - (a.area ?? 0));
   const tests = [
     (x) => winNames(x).includes(w),
     (x) => ids.some((id) => winNames(x).includes(id) || winNames(x).includes(id.split('.').pop())),
@@ -367,13 +409,63 @@ export const launch = (cmd, args, opts = {}) => new Promise((res) => {
   p.on('exit', (code, signal) => finish({ err: code === 0 ? null : Object.assign(new Error(`exit ${code ?? signal}`), { code: code ?? signal }) }));
 });
 
-/** Opens an app by name on Linux (gio launch, else gtk-launch). Errors say "Unable to find application" when
- *  there's no such app, as macOS's open does, so the caller words it the same way. */
-async function openLinuxApp(name) {
-  const app = findDesktopApp(await desktopApps(), name);
+/** Parse a .desktop Exec= line into [cmd, ...args], stripping XDG field codes (%u, %U, %f, %F, %i, %c, %k). */
+export function parseDesktopExec(execLine) {
+  const raw = String(execLine ?? '').trim();
+  if (!raw) return null;
+  const parts = [];
+  let cur = '', quote = '';
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (quote) {
+      if (ch === '\\' && quote === '"' && i + 1 < raw.length) { cur += raw[++i]; continue; }
+      if (ch === quote) { quote = ''; continue; }
+      cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      if (cur) { parts.push(cur); cur = ''; }
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) parts.push(cur);
+  const cleaned = parts.filter((p) => !/^%[fFuUdDnNickvm]$/.test(p));
+  return cleaned.length ? cleaned : null;
+}
+
+/** Opens an app by name on Linux (gio launch, else gtk-launch). On Hyprland, if the app already has an open window,
+ *  focuses it right away instead of spawning a duplicate or timing out. */
+async function openLinuxApp(name, targetArg = '') {
+  const apps = await desktopApps();
+  const app = findDesktopApp(apps, name);
   if (!app) return { err: new Error('not found'), stdout: '', stderr: `Unable to find application named "${name}"` };
   const before = await hyprClients();
-  let r = await launch('gio', ['launch', app.file]);
+  // Opening an app with no URL/file when it's already open on Hyprland: switch straight to its window.
+  if (!targetArg && HYPRLAND) {
+    const existing = matchWindow(before, app.entry.Name ?? name, apps) ?? matchWindow(before, name, apps);
+    if (existing) {
+      await hyprDispatch(...hyprCmd.focus(existing.address));
+      return { err: null, stdout: '', stderr: '', app, win: existing, waited: true, focusedExisting: true };
+    }
+  }
+  let r;
+  if (targetArg) {
+    const cmd = parseDesktopExec(app.entry.Exec);
+    if (cmd) {
+      r = await launch(cmd[0], [...cmd.slice(1), targetArg]);
+    } else {
+      r = await launch('gio', ['launch', app.file, targetArg]);
+    }
+    if (!r.err && HYPRLAND) {
+      const existing = matchWindow(before, app.entry.Name ?? name, apps) ?? matchWindow(before, name, apps);
+      const win = (await waitForWindow(before, app, existing ? 1500 : 6000)) ?? existing;
+      if (win) await hyprDispatch(...hyprCmd.focus(win.address)).catch(() => {});
+      return { ...r, app, win, waited: true };
+    }
+    return { ...r, app, win: null, waited: false };
+  }
+  r = await launch('gio', ['launch', app.file]);
   if (r.err?.code === 'ENOENT') r = await launch('gtk-launch', [app.id]);
   if (r.err?.code === 'ENOENT') return { err: r.err, stdout: '', stderr: `Found ${app.entry.Name}, but this computer has neither gio nor gtk-launch to start it.` };
   const win = !r.err && HYPRLAND ? await waitForWindow(before, app) : null;
@@ -432,15 +524,15 @@ export const imageBlock = async (file, mediaType) => {
 };
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
-const BROWSERS = /^(browser|safari|google chrome|chrome|arc|firefox|microsoft edge|edge|brave browser|brave|opera|vivaldi)$/i;
+const BROWSERS = /^(browser|safari|google chrome|chrome|chromium|zen|zen browser|arc|firefox|librewolf|microsoft edge|edge|brave browser|brave|opera|vivaldi)$/i;
 const ADDRESS = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]\S*)?$/i;
-/** The web address an act_in_app call only types into a browser's address bar (then Return, then maybe a wait), or null. */
+/** The web address an act_in_app call only types/fills into a browser's address bar (then Return, then maybe a wait), or null. */
 export function typedAddress(target, steps) {
   if (!BROWSERS.test(String(target).trim())) return null;
-  const i = steps.findIndex((s) => s.do === 'type');
+  const bar = /address|search field|smart search|url|location|new tab|omnibox|search or enter|search or type/i;
+  const i = steps.findIndex((s) => s.do === 'type' || (s.do === 'fill' && bar.test(s.field ?? '')));
   if (i < 0 || !ADDRESS.test(String(steps[i].text ?? '').trim()) || /\.app$/i.test(steps[i].text)) return null;
-  const bar = /address|search field|smart search|url|location|new tab|omnibox/i;
-  const before = steps.slice(0, i).every((s) => (s.do === 'key' && /^(cmd|command)\+(l|t)$/i.test(String(s.key).replace(/\s/g, ''))) || (s.do === 'click_text' && bar.test(s.text ?? '')));
+  const before = steps.slice(0, i).every((s) => (s.do === 'key' && /^(cmd|command|ctrl|control)\+(l|t)$/i.test(String(s.key).replace(/\s/g, ''))) || (s.do === 'click_text' && bar.test(s.text ?? '')));
   const ret = steps[i + 1]?.do === 'key' && /^(return|enter)$/i.test(String(steps[i + 1].key).trim());
   const after = steps.slice(i + 2).every((s) => s.do === 'wait');
   return before && ret && after ? String(steps[i].text).trim() : null;
@@ -638,26 +730,47 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, onF
       return c;
     };
   }
+  let overlayHideCount = 0;
+  let actPending = Promise.resolve();
   async function hands(...args) {
     if (!HANDS) throw new Error('This needs the Yomna app.');
     // Acting in an app may take the real cursor: meanwhile clicks go through the overlay, even where the Sidekick or
-    // its bubble sits on the spot being clicked.
+    // its bubble sits on the spot being clicked. On Linux also hide the overlay during capture so it never obscures apps.
     const acting = args[0] === 'act';
-    if (acting) {
-      ui({ kind: 'hands', on: true });
-      // Linux compositors (Hyprland) unmap the overlay asynchronously on the GTK main thread; wait briefly so clicks never hit it.
-      if (LINUX) await new Promise((r) => setTimeout(r, 60));
-    }
-    // While it acts, the Sidekick hops to where each step lands. Only the spot is passed on, never what is typed.
-    const onLine = acting ? (line) => {
-      if (line[0] !== '@') return;
-      let ev;
-      try { ev = JSON.parse(line.slice(1)); } catch { return; }
-      if (ev.ev === 'borrow') ui({ kind: 'hands', borrow: true });
-      else if (ev.ev === 'step' && Array.isArray(ev.bounds) && ev.bounds.length === 4 && ev.bounds.every(Number.isFinite)) ui({ kind: 'hands', step: { bounds: ev.bounds } });
-    } : undefined;
+    const capturing = args[0] === 'capture';
+    // If Gemini Live calls take_screenshot in parallel with act_in_app, wait for act_in_app to finish first so
+    // capture never pops the overlay back up mid-click and captures the post-action screen.
+    if (capturing) await actPending.catch(() => {});
+    const hideOverlay = acting || (LINUX && capturing);
+    const runOne = async () => {
+      if (hideOverlay) {
+        if (overlayHideCount++ === 0) {
+          ui({ kind: 'hands', on: true });
+          // Linux compositors (Hyprland) unmap the overlay asynchronously on the GTK main thread; wait briefly so clicks/shots never hit it.
+          if (LINUX) await new Promise((r) => setTimeout(r, acting ? 120 : 80));
+        }
+      }
+      // While it acts, the Sidekick hops to where each step lands. Only the spot is passed on, never what is typed.
+      const onLine = acting ? (line) => {
+        if (line[0] !== '@') return;
+        let ev;
+        try { ev = JSON.parse(line.slice(1)); } catch { return; }
+        if (ev.ev === 'borrow') ui({ kind: 'hands', borrow: true });
+        else if (ev.ev === 'step' && Array.isArray(ev.bounds) && ev.bounds.length === 4 && ev.bounds.every(Number.isFinite)) ui({ kind: 'hands', step: { bounds: ev.bounds } });
+      } : undefined;
+      try { return await runHands(args, { timeout: 120_000, onLine }); }
+      finally {
+        if (hideOverlay && --overlayHideCount === 0) ui({ kind: 'hands', on: false });
+      }
+    };
     let r;
-    try { r = await runHands(args, { timeout: 120_000, onLine }); } finally { if (acting) ui({ kind: 'hands', on: false }); }
+    if (acting) {
+      const p = actPending.then(runOne, runOne);
+      actPending = p.then(() => {}, () => {});
+      r = await p;
+    } else {
+      r = await runOne();
+    }
     let res;
     try { res = JSON.parse(r.stdout.trim().split('\n').pop() || '{}'); } catch { throw new Error(`hands helper failed: ${r.stderr.trim().slice(0, 200) || 'no output'}`); }
     if (res.ok === false && !res.cancelled) {
@@ -713,7 +826,12 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, onF
     lastShot = !size || !bounds ? null : shotFits(area, ...size) ? { ...shotMap(area, ...size, scale), bounds, win: res.window?.id ?? null, turn } : { unmapped: true, turn };
     const what = res.window ? `the ${res.window.app} window${res.window.title ? ` "${res.window.title}"` : ''}` : 'the whole screen';
     const dims = lastShot?.unmapped ? ` (it doesn't line up with the window on screen, so don't point or click by its pixels; use visible words)` : size ? shotUnits(...size, scale) : '';
-    return { content: [{ type: 'text', text: `Screenshot of ${what}${dims}.` }, await imageBlock(file, 'image/jpeg')] };
+    let context = '';
+    if (!res.window && LINUX && HANDS && !HANDS.endsWith('.mjs')) {
+      const f = await frontNow().catch(() => null);
+      if (f?.app) context = ` Active window: ${f.app}${f.title ? ` — ${f.title}` : ''}.`;
+    }
+    return { content: [{ type: 'text', text: `Screenshot of ${what}${dims}.${context}` }, await imageBlock(file, 'image/jpeg')] };
   }
   // target: "screen", "front" (the window you're working in), an app name ("browser", "Safari", "Figma"),
   // or "window:<id>" from list_windows. Apps that are open but hidden or minimised are brought forward.
@@ -1201,10 +1319,10 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, onF
           steps: z.array(z.object({
             // read_window and take_screenshot aren't steps (the result already shows the window), but models put them
             // in anyway; they're dropped instead of failing the whole call.
-            do: z.enum(['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait', 'read_window', 'take_screenshot', 'screenshot']),
+            do: z.enum(['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait', 'read_window', 'take_screenshot', 'screenshot', 'fullscreen', 'close', 'move']),
             id: z.number().int().optional(), field: z.string().optional(), text: z.string().optional(), option: z.string().optional(), near: z.string().optional(),
             key: z.string().optional(), direction: z.enum(['down', 'up', 'left', 'right']).optional(), amount: z.number().int().optional(), to_end: z.boolean().optional(),
-            x: z.number().optional(), y: z.number().optional(), seconds: z.number().optional(),
+            x: z.number().optional(), y: z.number().optional(), seconds: z.number().optional(), workspace: z.union([z.number(), z.string()]).optional(),
           })).min(1).max(40),
         }),
         executionMode: 'sequential',
@@ -1215,6 +1333,11 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, onF
           const steps = given.filter((s) => !['read_window', 'take_screenshot', 'screenshot'].includes(s.do));
           // Only reading steps (models sometimes send read_window here): read the window instead of failing the call.
           if (!steps.length) return readWindow(asked);
+          // Window management verbs sent to act_in_app by voice models (e.g. {"do":"fullscreen"}): route to `window`.
+          if (HYPRLAND && steps.length === 1 && ['fullscreen', 'close', 'move'].includes(steps[0].do)) {
+            const winTool = tools.find((x) => x.name === 'window');
+            if (winTool) return winTool.execute({ action: steps[0].do, app: asked === 'front' ? undefined : asked, workspace: steps[0].workspace }, ctx);
+          }
           if (!allowActions()) throw new Error(actionsOff);
           if (steps.some((s) => CHANGING.has(s.do))) agentChangesScreen();
           // "Type a web address into the browser's bar and press Return" is just opening a link: do that directly
@@ -1245,7 +1368,9 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, onF
           const inThisPlan = new Set(); // one plan acts in one window, so its own steps share an Allow even when the app isn't known yet
           for (const s of mapped) {
             const label = s.do === 'click_text' ? s.text : s.do === 'click' ? s.label : s.do === 'choose' ? s.option : null;
-            if (label && isRiskyClick(label)) {
+            if (skipAllow() && (s.do === 'click_text' || s.do === 'click' || s.do === 'choose')) {
+              s.confirmed = true;
+            } else if (label && isRiskyClick(label)) {
               if (ctx?.mcpConfirmed && s.confirmed) { delete s.label; continue; }
               const kind = riskyKind(label);
               // "front" or "browser" could be a different app by the next call, so those aren't remembered past this plan.
@@ -1342,6 +1467,7 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
     {
       name: 'list_files', description: 'List the files and folders in a directory.',
       parameters: z.object({ dir: z.string() }),
+      normalize: (a) => (a && typeof a === 'object' && !a.dir && (a.path || a.folder) ? { ...a, dir: String(a.path ?? a.folder) } : a),
       execute: async ({ dir }) => {
         const ents = await fs.readdir(allowed(checkRead(at(dir), HOME)), { withFileTypes: true });
         return ents.slice(0, 300).map((e) => (e.isDirectory() ? e.name + '/' : e.name)).join('\n') + (ents.length > 300 ? `\n…and ${ents.length - 300} more` : '');
@@ -1378,6 +1504,10 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
       parameters: z.object({ command: z.string() }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
       execute: async ({ command }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
+        // Bare `cd <dir>` runs in a throwaway subshell and does NOT navigate the Files window on screen.
+        if (/^\s*cd\s+[^;&|\n]+$/.test(String(command ?? ''))) {
+          throw new Error('cd alone runs in a temporary subshell and does not open or change folders in Files on screen. Call open with the folder path (e.g. "~/Downloads") or act_in_app click_text on the folder name in Files instead.');
+        }
         const cwd = fileDir() || workdir;
         const v = classifyCommand(command, HOME, { exists: existsSync, cwd, own, readOnly: readOnly() });
         if (v.level === BLOCK) throw new Error(`Blocked for safety: ${v.reason} Don't try to get around this; tell ${userName} what you wanted to do instead.`);
@@ -1404,6 +1534,8 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
         // A bare web address ("example.com", "www.bbc.co.uk/news") is a link, not an app name: it used to fail as
         // "Unable to find application named example.com" and cost a retry. App bundles ("Notes.app") stay apps.
         if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]\S*)?$/i.test(t) && !/\.app$/i.test(t)) t = `https://${t}`;
+        // "open Google" means Google Search in the browser, never a partial-match web app like "Google Contacts".
+        if (/^google(?:\s+search)?$/i.test(t)) t = 'https://www.google.com';
         const isFile = /^[~/.]/.test(t) && await fs.stat(expand(t)).then((s) => s.isFile() && (s.mode & 0o111) !== 0, () => false);
         allowed(checkOpen(t, HOME, { executable: isFile }));
         agentChangesScreen();
@@ -1414,21 +1546,24 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
         const inApp = app && ['darwin', 'win32'].includes(process.platform) && (isUrl || isPath) ? ['-a', String(app)] : [];
         if (process.platform === 'darwin') r = await run('open', isUrl || isPath ? [...inApp, isPath ? expand(t) : t] : ['-a', t]);
         else if (process.platform === 'win32') r = await winOpen(isPath ? expand(t) : t, app && (isUrl || isPath) ? String(app) : '');
-        // Linux: links and files go to xdg-open; a plain name is an app, found by its .desktop file.
+        // Linux: when an app is explicitly named for a link/file ("open github.com in Chrome"), launch that app with it;
+        // otherwise links and files go to xdg-open and plain names go through .desktop lookup.
+        else if ((isUrl || isPath) && app) r = await openLinuxApp(String(app), isPath ? expand(t) : t);
         else if (isUrl || isPath) r = await launch('xdg-open', [isPath ? expand(t) : t]);
         else r = await openLinuxApp(t);
         // Not installed: say so plainly, so the model doesn't go hunting for it with scripts (which need a yes each).
         if (r.err && /Unable to find application/i.test(r.stderr)) {
           const names = process.platform === 'linux' ? await appNames().catch(() => []) : [];
-          throw new Error(`There's no app called "${inApp.length ? app : t}" on ${THIS_COMPUTER} (not installed, or it has another name).${names.length ? ` Installed apps: ${names.join(', ')}. If one of these is clearly what they meant (a misheard name, or the same kind of app), open it instead; otherwise` : ' Don\'t look for it another way;'} tell ${userName} and carry on with the rest.`);
+          throw new Error(`There's no app called "${inApp.length || (process.platform === 'linux' && app && (isUrl || isPath)) ? app : t}" on ${THIS_COMPUTER} (not installed, or it has another name).${names.length ? ` Installed apps: ${names.join(', ')}. If one of these is clearly what they meant (a misheard name, or the same kind of app), open it instead; otherwise` : ' Don\'t look for it another way;'} tell ${userName} and carry on with the rest.`);
         }
         if (r.err) throw new Error(r.stderr.trim() || `Couldn't open ${t}.`);
         if (lastShot) lastShot.used = true;
         if (r.waited && r.app) {
           if (!r.win) return `Started ${r.app.entry.Name}, but no window of it showed up within 6 seconds (it may still be loading, or it runs without a window). Check with take_screenshot target 'screen' before saying it's open.`;
-          return `Opened ${r.app.entry.Name}: its window "${r.win.title}" is on workspace ${r.win.workspace} (app id for other tools: ${r.win.class}).`;
+          if (r.focusedExisting) return `Switched to ${r.app.entry.Name}: its window "${r.win.title}" is on workspace ${r.win.workspace} (app id for other tools: ${r.win.class}).`;
+          return `Opened ${isUrl || isPath ? `${t} in ` : ''}${r.app.entry.Name}: its window "${r.win.title}" is on workspace ${r.win.workspace} (app id for other tools: ${r.win.class}).`;
         }
-        return `Opened ${t}${inApp.length ? ` in ${app}` : ''}.`;
+        return `Opened ${t}${app && (isUrl || isPath) ? ` in ${app}` : ''}.`;
       },
     },
     ...(HYPRLAND ? [{
@@ -1439,7 +1574,7 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
         const wins = await hyprClients();
         const line = (w) => `${w.class} "${w.title}" on workspace ${w.workspace}${w.focused ? ' (in front)' : ''}`;
         if (action === 'list') return wins.length ? wins.map(line).join('\n') : 'No app windows are open.';
-        const ws = String(workspace ?? '').trim();
+        const ws = String(workspace ?? (action === 'workspace' ? app : '') ?? '').trim().replace(/^(?:workspace|ws)\s+/i, '');
         if (action === 'workspace') {
           if (!/^(?:\d+|[+-]\d+|e[+-]\d+|special(?::\S+)?|previous)$/.test(ws)) throw new Error('Give workspace as a number, like 2.');
           const r = await hyprDispatch(...hyprCmd.workspace(ws));
@@ -1447,9 +1582,9 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
           agentChangesScreen(); lastRead = null;
           return `On workspace ${ws} now.`;
         }
-        if (!String(app ?? '').trim()) throw new Error(`Say which app: ${wins.map((w) => w.class).join(', ') || 'none are open'}.`);
-        const w = matchWindow(wins, app, await desktopApps().catch(() => []));
-        if (!w) throw new Error(`No open window matches "${app}". Open windows: ${wins.map(line).join('; ') || 'none'}. If it isn't open, use the open tool.`);
+        const apps = await desktopApps().catch(() => []);
+        const w = String(app ?? '').trim() ? matchWindow(wins, app, apps) : wins.find((x) => x.focused) ?? wins[0] ?? null;
+        if (!w) throw new Error(`No open window matches "${app ?? ''}". Open windows: ${wins.map(line).join('; ') || 'none'}. If it isn't open, use the open tool.`);
         if (action !== 'focus' && !allowActions()) throw new Error(actionsOff);
         if (action === 'close' && !(await confirm(`Close ${w.class} ("${w.title.slice(0, 60)}")?`))) throw new Error(`${userName} said no, so it stays open.`);
         if (action === 'move' && !/^\d+$/.test(ws)) throw new Error('Give workspace as a number, like 2.');
@@ -1459,8 +1594,20 @@ A drawing stays until cleared or the window changes; set keep: true to keep exis
         agentChangesScreen(); lastRead = null;
         if (action === 'close') {
           await new Promise((res) => setTimeout(res, 600));
-          const still = (await hyprClients()).some((x) => x.address === w.address);
-          return still ? `Asked ${w.class} to close, but its window is still open (it may be asking to save). Take a screenshot to see.` : `Closed ${w.class} ("${w.title}").`;
+          let after = await hyprClients();
+          let still = after.some((x) => x.address === w.address);
+          if (still) {
+            // Some XWayland/browser windows on inactive workspaces ignore off-workspace WM_DELETE_WINDOW: focus once and retry.
+            await hyprDispatch(...hyprCmd.focus(w.address)).catch(() => {});
+            await new Promise((res) => setTimeout(res, 150));
+            await hyprDispatch(...hyprCmd.close(w.address)).catch(() => {});
+            await new Promise((res) => setTimeout(res, 600));
+            after = await hyprClients();
+            still = after.some((x) => x.address === w.address);
+          }
+          if (still) return `Asked ${w.class} ("${w.title}") to close, but it stayed open (it may be showing a confirmation dialog to close tabs or save work). Take a screenshot to see.`;
+          const more = after.filter((x) => x.class === w.class).length;
+          return `Closed ${w.class} ("${w.title}").${more ? ` (${more} other ${w.class} window${more === 1 ? '' : 's'} still open.)` : ''}`;
         }
         return action === 'focus' ? `Switched to ${line(w)}.` : action === 'move' ? `Moved ${w.class} to workspace ${ws}.` : `Toggled fullscreen for ${w.class}.`;
       },

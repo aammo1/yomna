@@ -71,11 +71,12 @@
         const box = Jarvis.hitBox?.();
         if (box) rects.push(...Jarvis.hitRects(Jarvis.hitTest, [box[0] - 48, box[1] - 48, box[2] + 96, box[3] + 96]));
       }
-      const key = rects.join(','), now = performance.now();
+      const keepOpen = Boolean(!handsBusy && !Jarvis.game && Jarvis.ink?.playing);
+      const key = `${keepOpen ? 1 : 0}|${rects.join(',')}`, now = performance.now();
       // Sent when it changes, and again every couple of seconds in case the window's shape was reset under it.
       if (!force && key === sent && now - sentAt < 2000) return;
       sent = key; sentAt = now;
-      invoke('set_hit_rects', { rects }).catch(() => { sent = ''; });
+      invoke('set_hit_rects', { rects, keepOpen }).catch(() => { sent = ''; });
     };
     setInterval(() => syncLinuxHitRects(false), 120);
   }

@@ -84,8 +84,30 @@ const loose = (o, keep) => Object.fromEntries(Object.entries(o).filter(([k]) => 
 const maybeParseJson = (v) => {
   if (typeof v !== 'string') return v;
   const s = v.trim();
-  if (!((s.startsWith('[') && s.endsWith(']')) || (s.startsWith('{') && s.endsWith('}')))) return v;
-  try { return JSON.parse(s); } catch { return v; }
+  if (!(s.startsWith('{') || s.startsWith('['))) return v;
+  try { return JSON.parse(s); } catch {}
+  // Voice models (Gemini Live) sometimes append extra closing brackets like `]}` at the end of a stringified beat.
+  // Extract the first balanced top-level JSON object/array prefix and parse it.
+  let depth = 0, inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(s.slice(0, i + 1)); } catch { break; }
+      }
+      if (depth < 0) break;
+    }
+  }
+  return v;
 };
 const KIND_ALIASES = {
   diagram: 'flow', flowchart: 'flow', flow_chart: 'flow', process: 'flow', workflow: 'flow', architecture: 'flow', tree: 'flow', pipeline: 'flow',

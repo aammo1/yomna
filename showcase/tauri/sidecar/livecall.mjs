@@ -20,8 +20,8 @@ const ERRORS = {
 export const liveErrorText = (reason) => ERRORS[reason] ?? ERRORS.dropped;
 export const SWITCH_TO_CLASSIC = 'Switch to Classic';
 // ponytail: how long held draw marks wait for her voice before drawing anyway (a walkthrough step waiting for a click
-// gets no voice until after it). A guess: needs a calibration pass on a real call, with a real mic and speakers.
-export const DRAW_HOLD_MS = 5000;
+// gets no voice until after it). Keep short so diagrams never look stuck if voice arrives late or is already playing.
+export const DRAW_HOLD_MS = 1500;
 // ponytail: cutting in on her locally (story 10). Mic loudness (RMS, fraction of full scale) held this long while her
 // reply plays stops it before Gemini's `interrupted` arrives. A guess: needs a real-mic calibration pass by Eric (echo
 // cancellation leaves some of her own voice in; too low and she cuts herself off, too high and she talks over him).
@@ -163,7 +163,16 @@ export function createLiveCall({ makeBrain, ui, send, ask, toClassic, anim = () 
         if (e.badArgs) log('tool_outcome', { id: e.id, name: e.name, ok: false, reason: 'bad_args' });
         messages.push({ role: 'tool', content: [{ content: String(e.output ?? ''), isError: !e.ok }] });
         // Cancelled or failed: what it held never draws (a cancelled drawing is taken off the overlay).
-        if (held.has(e.id)) { if (e.ok) { held.get(e.id).answered = true; holdTimer(e.id); } else { clearTimeout(held.get(e.id).timer); held.delete(e.id); } }
+        if (held.has(e.id)) {
+          if (e.ok) {
+            held.get(e.id).answered = true;
+            if (speechId) release(e.id, true);
+            else holdTimer(e.id);
+          } else {
+            clearTimeout(held.get(e.id).timer);
+            held.delete(e.id);
+          }
+        }
         ui({ kind: 'agent', e: { type: 'tool_end', id: e.id, isError: !e.ok } });
         return;
       case 'error':

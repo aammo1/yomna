@@ -6,9 +6,9 @@
 // (the cursor over other apps, global shortcuts, grabbing the screen) is handled per feature below.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -76,6 +76,52 @@ fn hit_rects(flat: &[f64]) -> Vec<(i32, i32, i32, i32)> {
 
 static HANDS_BUSY: AtomicBool = AtomicBool::new(false);
 static OVERLAY_HAS_RECTS: AtomicBool = AtomicBool::new(false);
+static OVERLAY_KEEP_OPEN: AtomicBool = AtomicBool::new(false);
+static SHOW_GRACE_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+fn in_show_grace() -> bool {
+    now_ms() < SHOW_GRACE_UNTIL_MS.load(Ordering::SeqCst)
+}
+
+/// On Hyprland, XWayland reports `scale_factor() == 1.0` even when the Wayland compositor scales the monitor
+/// (e.g. 1.25x), so the overlay canvas is in physical pixels (1920x1080) while `yomna-hands` reports Hyprland
+/// logical coordinates (1536x864). Read the monitor's scale from `hyprctl monitors -j` so `ink.js` scales
+/// incoming window bounds and screen marks onto the overlay 1:1.
+pub(crate) fn hyprland_monitor_scale(phys_x: i32, phys_y: i32) -> f64 {
+    if session() != Session::Wayland || std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        return 1.0;
+    }
+    let Ok(out) = std::process::Command::new("hyprctl").args(["monitors", "-j"]).output() else {
+        return 1.0;
+    };
+    if !out.status.success() {
+        return 1.0;
+    }
+    let Ok(list) = serde_json::from_slice::<Value>(&out.stdout) else {
+        return 1.0;
+    };
+    let Some(mons) = list.as_array() else {
+        return 1.0;
+    };
+    for m in mons {
+        let x = m.get("x").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let y = m.get("y").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let w = m.get("width").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let h = m.get("height").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let s = m.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
+        if s > 0.5 && phys_x >= x && phys_x < x + w && phys_y >= y && phys_y < y + h {
+            return s;
+        }
+    }
+    mons.first()
+        .and_then(|m| m.get("scale").and_then(Value::as_f64))
+        .filter(|s| *s > 0.5)
+        .unwrap_or(1.0)
+}
 
 /// On Hyprland/Sway/i3/COSMIC, XWayland windows intercept pointer clicks across their whole bounding box regardless
 /// of `XShapeInput` (`input_shape_combine_region`). While `yomna-hands` acts in another app, hide the overlay
@@ -97,7 +143,11 @@ pub(crate) fn set_hands_busy(app: &AppHandle, busy: bool) {
                 if gw.is_visible() {
                     gw.hide();
                 }
-            } else if OVERLAY_HAS_RECTS.load(Ordering::SeqCst) && !gw.is_visible() {
+            } else if (OVERLAY_HAS_RECTS.load(Ordering::SeqCst)
+                || OVERLAY_KEEP_OPEN.load(Ordering::SeqCst)
+                || in_show_grace())
+                && !gw.is_visible()
+            {
                 if let Some(win) = gw.window() {
                     win.set_override_redirect(true);
                 }
@@ -110,6 +160,9 @@ pub(crate) fn set_hands_busy(app: &AppHandle, busy: bool) {
 /// Ensures the overlay is mapped before an interaction, live call, or drawing begins so WebKitGTK's
 /// `requestAnimationFrame` loop runs immediately after an idle hide.
 pub(crate) fn ensure_overlay_shown(app: &AppHandle) {
+    // Keep the overlay mapped while WebKitGTK starts audio sync / font loading / card animation so an
+    // early empty `set_hit_rects([])` tick never hides it mid-animation (freezing requestAnimationFrame).
+    SHOW_GRACE_UNTIL_MS.store(now_ms().saturating_add(6000), Ordering::SeqCst);
     if !unmanaged_overlay() || HANDS_BUSY.load(Ordering::SeqCst) {
         return;
     }
@@ -133,21 +186,22 @@ pub(crate) fn ensure_overlay_shown(app: &AppHandle) {
 
 /// Makes the rectangles the overlay's input shape: clicks land on them and pass through everywhere else. No cursor
 /// tracking is involved, so it works on Wayland too, where the cursor can't be seen over other apps.
-pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64]) {
+pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64], keep_open: bool) {
     use gtk::cairo::{RectangleInt, Region};
     use gtk::prelude::WidgetExt;
     let rects = hit_rects(flat);
     let has_rects = !rects.is_empty();
     OVERLAY_HAS_RECTS.store(has_rects, Ordering::SeqCst);
+    OVERLAY_KEEP_OPEN.store(keep_open, Ordering::SeqCst);
     // YOMNA_TRACE=1: the shape goes to stderr, for checking click-through from outside (and for bug reports).
     if trace() {
-        eprintln!("hit rects: {rects:?}");
+        eprintln!("hit rects (keep_open={keep_open}): {rects:?}");
     }
     let w = window.clone();
     let _ = window.run_on_main_thread(move || {
         let Ok(gw) = w.gtk_window() else { return };
         if unmanaged_overlay() {
-            if HANDS_BUSY.load(Ordering::SeqCst) || !has_rects {
+            if HANDS_BUSY.load(Ordering::SeqCst) || (!has_rects && !keep_open && !in_show_grace()) {
                 if gw.is_visible() {
                     gw.hide();
                 }

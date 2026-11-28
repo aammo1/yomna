@@ -513,4 +513,20 @@ console.log('shape radius tests: passed');
   });
   assert.equal(aliasMind.beats[0].marks[0].kind, 'mindmap');
   assert.deepEqual(checkDraw(aliasMind), []);
+
+  // Regression (log of 2026-11-28 14:22-14:24): Gemini Live stringified beats[0] with trailing extra `]}` AND
+  // unknown tone `"neutral"` on nodes, causing 8 consecutive bad_args after the first diagram succeeded.
+  const trailingGeo = DrawArgs.parse({
+    beats: ['{"say":"Here is a diagram made of triangles.","marks":[{"kind":"geometry","vertices":[{"id":"a","x":0,"y":0},{"id":"b","x":1,"y":0},{"id":"c","x":0.5,"y":0.866}],"lines":[{"from":"a","to":"b"},{"from":"b","to":"c"},{"from":"c","to":"a"}]}]}]}'],
+  });
+  assert.equal(trailingGeo.beats[0].marks[0].kind, 'geometry');
+  assert.deepEqual(checkDraw(trailingGeo), []);
+
+  const trailingRag = DrawArgs.parse({
+    beats: ['{"say":"Here is a flow diagram explaining a RAG system.","marks":[{"kind":"flow","title":"RAG System","nodes":[{"id":"a","text":"User Query","tone":"accent"},{"id":"b","text":"Retrieve Relevant Info","tone":"teal"},{"id":"c","text":"Generate Response","tone":"accent"},{"id":"d","text":"Output","tone":"neutral"}],"links":[{"from":"a","to":"b"},{"from":"b","to":"c"},{"from":"c","to":"d"}]}]}]}'],
+  });
+  assert.equal(trailingRag.beats[0].marks[0].kind, 'flow');
+  assert.equal(trailingRag.beats[0].marks[0].nodes.length, 4);
+  assert.equal(trailingRag.beats[0].marks[0].nodes[3].tone, undefined, 'unknown tone dropped instead of failing');
+  assert.deepEqual(checkDraw(trailingRag), []);
 }

@@ -532,7 +532,7 @@ fn do_scroll(x: i32, y: i32, dir: &str, amount: i32) -> Result<(), String> {
 }
 
 fn ydotool_key(mods: &[Mod], code: u16) -> Result<(), String> {
-    let mut args: Vec<String> = vec!["key".to_string()];
+    let mut args: Vec<String> = vec!["key".to_string(), "-d".to_string(), "15".to_string()];
     for m in mods {
         args.push(format!("{}:1", m.evdev_code()));
     }
@@ -590,12 +590,12 @@ fn do_type(text: &str) -> Result<(), String> {
         // fcitx5 active, whereas wtype's virtual-keyboard protocol is ignored by XWayland and conflicts with fcitx5.
         if ascii_only && ydotool_available() {
             let out = Command::new("ydotool")
-                .args(["type", "-e", "0", "-d", "8", "-H", "8", "--", text])
+                .args(["type", "-e", "0", "-d", "15", "-H", "15", "--", text])
                 .stdin(Stdio::null())
                 .output()
                 .map_err(|e| format!("failed to run ydotool type: {e}"))?;
             if out.status.success() {
-                sleep(Duration::from_millis(40));
+                sleep(Duration::from_millis(50));
                 return Ok(());
             }
         }
@@ -1041,8 +1041,12 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                     verify_spot_safe(gx, gy)?;
                     ensure_focus()?;
                     progress(json!({ "ev": "step", "i": i, "do": what, "label": c.label, "bounds": c.bounds.to_arr() }));
-                    if what == "focus" || !press(c) {
-                        do_click(gx, gy, ClickKind::Left)?;
+                    // Real pointer click is far more reliable than AT-SPI DoAction on Wayland/GTK4/Gecko
+                    // (many web/GTK buttons return true from DoAction without firing real click events).
+                    if do_click(gx, gy, ClickKind::Left).is_err() && what != "focus" {
+                        if !press(c) {
+                            return Err(format!("Step {n}: couldn't click \"{}\".", c.label));
+                        }
                     }
                     done.push(format!("{what} {}", if c.label.is_empty() { format!("control {}", c.id) } else { c.label.clone() }));
                 }
@@ -1075,14 +1079,17 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                         progress(json!({ "ev": "step", "i": i, "do": "click_text", "label": text, "bounds": [x, y, bw, bh] }));
                         let id = m["id"].as_u64().unwrap_or(0) as usize;
                         let double_entry = is_file_entry_click(&w, &ui.texts, text, gx, gy);
-                        let pressed = !double_entry
-                            && ui
-                                .controls
-                                .iter()
-                                .find(|c| c.id == id && !matches!(c.role.as_str(), "text field" | "combo box") && (c.label == text || c.value == text))
-                                .is_some_and(press);
-                        if !pressed {
-                            do_click(gx, gy, if double_entry { ClickKind::DoubleLeft } else { ClickKind::Left })?;
+                        let click_kind = if double_entry { ClickKind::DoubleLeft } else { ClickKind::Left };
+                        if do_click(gx, gy, click_kind).is_err() {
+                            let pressed = !double_entry
+                                && ui
+                                    .controls
+                                    .iter()
+                                    .find(|c| c.id == id && !matches!(c.role.as_str(), "text field" | "combo box") && (c.label == text || c.value == text))
+                                    .is_some_and(press);
+                            if !pressed {
+                                return Err(format!("Step {n}: couldn't click \"{text}\"."));
+                            }
                         }
                         done.push(format!("clicked \"{text}\""));
                     } else {
@@ -1121,9 +1128,23 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                     let text = s_str(s, "text").unwrap_or("");
                     let field_name = s_str(s, "field").unwrap_or("").trim();
                     let field_low = field_name.to_ascii_lowercase();
+                    // Browser address bar: Ctrl+L reliably focuses and selects the entire URL bar across Chrome,
+                    // Chromium, Zen, and Firefox even when autocomplete popups are open or AT-SPI lags.
+                    if is_browser(&w.app, &w.class, &w.exe) && is_url_bar_field(&field_low) {
+                        ensure_focus()?;
+                        progress(json!({ "ev": "step", "i": i, "do": what, "label": field_name }));
+                        do_key("ctrl+l")?;
+                        sleep(Duration::from_millis(180));
+                        let _ = do_key("ctrl+a");
+                        sleep(Duration::from_millis(40));
+                        let _ = do_key("BackSpace");
+                        sleep(Duration::from_millis(40));
+                        do_type(text)?;
+                        done.push(format!("{field_name} = \"{}\"", text.chars().take(40).collect::<String>()));
+                    } else {
                     let mut matched_field = find_text_field(&ui.controls, s).cloned();
                     // Browsers (Zen/Firefox/Chrome) populate their document-web AT-SPI subtree ~200-350 ms after
-                    // focus/a11y activation; retry once before falling back to Ctrl+L or OCR.
+                    // focus/a11y activation; retry once before falling back to OCR.
                     if matched_field.is_none() && (is_browser(&w.app, &w.class, &w.exe) || ui.controls.len() < 5) {
                         ensure_focus()?;
                         sleep(Duration::from_millis(350));
@@ -1147,23 +1168,18 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                             verify_spot_safe(gx, gy)?;
                             progress(json!({ "ev": "step", "i": i, "do": what, "label": c.label, "bounds": c.bounds.to_arr() }));
                             do_click(gx, gy, ClickKind::Left)?;
-                            sleep(Duration::from_millis(80));
+                            sleep(Duration::from_millis(100));
                         } else if c.focused {
                             progress(json!({ "ev": "step", "i": i, "do": what, "label": c.label }));
                         } else {
                             return Err(format!("Step {n}: field \"{}\" has no screen bounds.", c.label));
                         }
                         let _ = do_key("ctrl+a");
+                        sleep(Duration::from_millis(40));
+                        let _ = do_key("BackSpace");
+                        sleep(Duration::from_millis(40));
                         do_type(text)?;
                         done.push(format!("{} = \"{}\"", c.label, text.chars().take(40).collect::<String>()));
-                    } else if is_browser(&w.app, &w.class, &w.exe) && is_url_bar_field(&field_low) {
-                        // Browser address bar: Ctrl+L focuses it reliably across Chrome, Zen, Firefox, and Chromium.
-                        ensure_focus()?;
-                        progress(json!({ "ev": "step", "i": i, "do": what, "label": field_name }));
-                        do_key("ctrl+l")?;
-                        sleep(Duration::from_millis(100));
-                        do_type(text)?;
-                        done.push(format!("{field_name} = \"{}\"", text.chars().take(40).collect::<String>()));
                     } else if !field_name.is_empty() {
                         // OCR fallback for web/Electron/GTK4 fields, ignoring hits inside non-input links/buttons (e.g. "How Search works").
                         ensure_focus()?;
@@ -1179,11 +1195,17 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                             do_click(gx, gy, ClickKind::Left)?;
                             sleep(Duration::from_millis(100));
                             let _ = do_key("ctrl+a");
+                            sleep(Duration::from_millis(40));
+                            let _ = do_key("BackSpace");
+                            sleep(Duration::from_millis(40));
                             do_type(text)?;
                             done.push(format!("{} = \"{}\"", hit.text, text.chars().take(40).collect::<String>()));
                         } else if let Some(fc) = ui.controls.iter().find(|c| c.focused && is_input_role(&c.role)) {
                             progress(json!({ "ev": "step", "i": i, "do": what, "label": fc.label }));
                             let _ = do_key("ctrl+a");
+                            sleep(Duration::from_millis(40));
+                            let _ = do_key("BackSpace");
+                            sleep(Duration::from_millis(40));
                             do_type(text)?;
                             done.push(format!("{} = \"{}\"", fc.label, text.chars().take(40).collect::<String>()));
                         } else {
@@ -1193,6 +1215,7 @@ pub fn run_act(arg: &str) -> Result<Value, Value> {
                         }
                     } else {
                         return Err(format!("Step {n}: no text field called \"\" here. Check its label with read_window."));
+                    }
                     }
                 }
                 "choose" => {

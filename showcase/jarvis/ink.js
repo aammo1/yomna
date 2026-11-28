@@ -29,9 +29,10 @@
   const reduced = () => reducedMQ.matches;
   const sleep = (ms) => new Promise((r) => setTimeout(r, reduced() ? Math.min(ms, 60) : ms));
   const frame = () => new Promise((r) => requestAnimationFrame(r));
-  // Global screen points → this overlay's px.
-  const loc = (x, y) => [x - (R.origin?.x ?? 0), y - (R.origin?.y ?? 0)];
-  const locRect = (r) => (r ? [...loc(r[0], r[1]), r[2], r[3]] : null);
+  // Global screen points → this overlay's px (scaled by coordScale on fractional Wayland XWayland overlays).
+  const cs = () => (R.coordScale > 0.5 ? R.coordScale : 1);
+  const loc = (x, y) => { const s = cs(); return [x * s - (R.origin?.x ?? 0), y * s - (R.origin?.y ?? 0)]; };
+  const locRect = (r) => { if (!r) return null; const s = cs(); return [...loc(r[0], r[1]), r[2] * s, r[3] * s]; };
 
   // ---------------------------------------------------------------- geometry: shapes drawn the way a hand would
   const dist = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
@@ -639,7 +640,8 @@
       x = S0[0] + (SW - w * k) / 2; y = S0[1] + Math.max(8, (SH - h * k) / 2);
     } else {
       const fit = Math.max(1, Math.min((S0[2] - S0[0] - 32) / (w + 8), (S0[3] - S0[1] - 100) / (h + 14)));
-      k = Math.min(m.card_size === 'small' ? 0.8 : m.card_size === 'large' ? 1.5 : 1, fit);
+      const base = cs();
+      k = Math.min((m.card_size === 'small' ? 0.8 : m.card_size === 'large' ? 1.5 : 1) * base, fit);
       [x, y] = roomFor(Math.round(w * k), Math.round(h * k), m.part);
     }
     const bar = o.bar === false ? 0 : 26;
@@ -2343,7 +2345,7 @@
   R.inkRects = () => {
     const out = [];
     for (const m of marks) {
-      if (!m.alive || !m.hits || m.alpha < 0.5) continue;
+      if (!m.alive || !m.hits || (m.leaving && m.alpha < 0.5)) continue;
       for (const h of m.hits()) out.push(xf(m, h.rect));
     }
     return out;

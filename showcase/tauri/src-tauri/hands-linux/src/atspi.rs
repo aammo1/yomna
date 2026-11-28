@@ -207,6 +207,46 @@ async fn read_window_ui_async(win: &Win) -> Result<UiTree, String> {
     Ok(UiTree::unavailable())
 }
 
+/// Detects per-frame AT-SPI GetExtents scale relative to Hyprland/X11 logical window bounds.
+/// Chromium on Wayland with fractional scaling reports its native Aura `frame` in a different pixel space
+/// (e.g. 1274x708 for a 1512x840 logical window, uniform ratio ~0.8426) than its `document web` subtree.
+fn detect_frame_scale(fw: i32, fh: i32, win: Rect) -> Option<(f64, f64)> {
+    if fw <= 0 || fh <= 0 || win.is_empty() {
+        return None;
+    }
+    let rx = fw as f64 / win.w as f64;
+    let ry = fh as f64 / win.h as f64;
+    if (rx - ry).abs() < 0.08 && (rx - 1.0).abs() > 0.03 && (0.4..=3.0).contains(&rx) {
+        Some((rx, ry))
+    } else {
+        None
+    }
+}
+
+/// Detects the AT-SPI GetExtents scale inside a `document web` (or `document *`) subtree.
+/// On Wayland fractional scaling (e.g. 1.25x), Chromium's Blink renderer reports physical pixels
+/// (e.g. x=0, y=129, w=1892, h=922 inside a 1512x840 logical window -> (dx+dw)/w ≈ 1.25, (dy+dh)/h ≈ 1.25)
+/// even when its native Aura `frame` reported a different scale.
+fn detect_document_scale(dx: i32, dy: i32, dw: i32, dh: i32, win: Rect, mon_scale: f64) -> Option<(f64, f64)> {
+    if dw <= 0 || dh <= 0 || win.is_empty() {
+        return None;
+    }
+    let rx_end = (dx.max(0) + dw) as f64 / win.w as f64;
+    let ry_end = (dy.max(0) + dh) as f64 / win.h as f64;
+    let rx_w = dw as f64 / win.w as f64;
+    if mon_scale > 1.01
+        && ((rx_end - mon_scale).abs() < 0.15
+            || (ry_end - mon_scale).abs() < 0.15
+            || (rx_w - mon_scale).abs() < 0.15)
+    {
+        return Some((mon_scale, mon_scale));
+    }
+    if (rx_end - 1.0).abs() < 0.15 || (rx_w - 1.0).abs() < 0.15 {
+        return Some((1.0, 1.0));
+    }
+    None
+}
+
 async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path: String) -> UiTree {
     // Browsers: the page is a "document web" deep inside (often 20+ levels) after the browser's own bar and tabs, which
     // used to eat the whole budget, so web pages showed nothing. The page is read first, hidden parts (background
@@ -218,17 +258,12 @@ async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path:
         note: "",
     };
     let mut visited = 0usize;
-    // (bus, path, depth, inside the page)
-    let mut page: Vec<(String, String, usize, bool)> = Vec::new();
-    let mut rest: Vec<(String, String, usize, bool)> = vec![(app_bus, app_path, 0, false)];
-
     let mon_scale = monitor_scale_at(win.bounds.mid_x(), win.bounds.mid_y());
-    // Detected per-window scale divisor: 1.0 when the app reports logical pixels, or `mon_scale` when a toolkit
-    // (GTK/Chromium/Firefox on fractional Wayland scaling) reports physical pixels in GetExtents.
-    let mut coord_scale: f64 = 1.0;
-    let mut scale_detected = mon_scale <= 1.01 || win.bounds.is_empty();
+    // (bus, path, depth, inside the page, scale_x, scale_y)
+    let mut page: Vec<(String, String, usize, bool, f64, f64)> = Vec::new();
+    let mut rest: Vec<(String, String, usize, bool, f64, f64)> = vec![(app_bus, app_path, 0, false, 1.0, 1.0)];
 
-    while let Some((bus, path, depth, in_page)) = page.pop().or_else(|| rest.pop()) {
+    while let Some((bus, path, depth, in_page, mut sx_div, mut sy_div)) = page.pop().or_else(|| rest.pop()) {
         if Instant::now() >= deadline || visited >= 4000 || tree.controls.len() >= 400 {
             break;
         }
@@ -253,17 +288,22 @@ async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path:
         if !showing && depth > 2 && !wrapper_container {
             continue;
         }
-        // Detect physical vs logical GetExtents from the top-level frame size.
-        if !scale_detected && role_low == "frame" {
+        // Detect coordinate scale independently for native top-level `frame` vs web `document *` subtrees.
+        if !in_page && role_low == "frame" && !win.bounds.is_empty() {
             if let Ok(comp) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Component").await {
                 if let Ok((_, _, fw, fh)) = comp.call::<_, _, (i32, i32, i32, i32)>("GetExtents", &(1u32,)).await {
-                    if fw > 0 && fh > 0 {
-                        let rx = fw as f64 / win.bounds.w as f64;
-                        let ry = fh as f64 / win.bounds.h as f64;
-                        if (rx - mon_scale).abs() < 0.15 && (ry - mon_scale).abs() < 0.15 {
-                            coord_scale = mon_scale;
-                        }
-                        scale_detected = true;
+                    if let Some((rx, ry)) = detect_frame_scale(fw, fh, win.bounds) {
+                        sx_div = rx;
+                        sy_div = ry;
+                    }
+                }
+            }
+        } else if role_low.starts_with("document") && !win.bounds.is_empty() {
+            if let Ok(comp) = Proxy::new(conn, bus.as_str(), path.as_str(), "org.a11y.atspi.Component").await {
+                if let Ok((dx, dy, dw, dh)) = comp.call::<_, _, (i32, i32, i32, i32)>("GetExtents", &(1u32,)).await {
+                    if let Some((rx, ry)) = detect_document_scale(dx, dy, dw, dh, win.bounds, mon_scale) {
+                        sx_div = rx;
+                        sy_div = ry;
                     }
                 }
             }
@@ -285,10 +325,10 @@ async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path:
                     // know where it is on screen, so its "screen" coordinates are really window ones.
                     if let Ok((x, y, w, h)) = comp.call::<_, _, (i32, i32, i32, i32)>("GetExtents", &(1u32,)).await {
                         if w > 0 && h > 0 {
-                            let sx = (x as f64 / coord_scale).round() as i32;
-                            let sy = (y as f64 / coord_scale).round() as i32;
-                            let sw = (w as f64 / coord_scale).round() as i32;
-                            let sh = (h as f64 / coord_scale).round() as i32;
+                            let sx = (x as f64 / sx_div).round() as i32;
+                            let sy = (y as f64 / sy_div).round() as i32;
+                            let sw = (w as f64 / sx_div).round() as i32;
+                            let sh = (h as f64 / sy_div).round() as i32;
                             bounds = Rect::new(sx + win.bounds.x, sy + win.bounds.y, sw, sh);
                         }
                     }
@@ -325,12 +365,12 @@ async fn walk_app(conn: &zbus::Connection, win: &Win, app_bus: String, app_path:
         }
 
         if depth < 60 {
-            let into_page = in_page || role_name.to_ascii_lowercase().starts_with("document");
+            let into_page = in_page || role_low.starts_with("document");
             if let Ok(children) = acc.call::<_, _, Vec<(String, OwnedObjectPath)>>("GetChildren", &()).await {
                 let to = if into_page { &mut page } else { &mut rest };
                 for (cbus, cpath) in children.into_iter().take(300).rev() {
                     if !cbus.is_empty() {
-                        to.push((cbus, cpath.to_string(), depth + 1, into_page));
+                        to.push((cbus, cpath.to_string(), depth + 1, into_page, sx_div, sy_div));
                     }
                 }
             }
@@ -366,6 +406,9 @@ pub fn find_text_matches(win: &Win, query: &str) -> Vec<Value> {
     let tree = read_window_ui(win);
     let mut matches = Vec::new();
     for c in tree.controls {
+        if c.offscreen || c.bounds.is_empty() {
+            continue;
+        }
         let text = if !c.label.is_empty() { &c.label } else { &c.value };
         let tl = text.trim().to_ascii_lowercase();
         let alias = alts.iter().any(|a| tl == *a);
@@ -380,18 +423,29 @@ pub fn find_text_matches(win: &Win, query: &str) -> Vec<Value> {
             "bounds": c.bounds.to_arr(),
             "id": c.id,
         }));
-        if matches.len() >= 8 {
+        if matches.len() >= 16 {
             break;
         }
     }
-    // Exact words first: "7" is the 7 key, not "17" or "Shift+7".
-    matches.sort_by_key(|m| m["match"] != "exact");
+    // Exact words first; among equal matches prefer real clickable controls (button/link/menu item) over tabs or labels
+    // so e.g. click_text("New Tab") in Chrome clicks the "+" New Tab button rather than an already-open tab named "New Tab".
+    let role_rank = |r: &str| -> u8 {
+        match r {
+            "button" | "link" | "menu item" | "checkbox" | "radio button" => 0,
+            "text field" | "combo box" | "password field" => 1,
+            "tab" => 2,
+            _ => 3,
+        }
+    };
+    matches.sort_by_key(|m| (m["match"] != "exact", role_rank(m["role"].as_str().unwrap_or(""))));
+    matches.truncate(8);
     matches
 }
 
 #[cfg(test)]
 mod tests {
-    use super::key_aliases;
+    use super::{detect_document_scale, detect_frame_scale, key_aliases};
+    use crate::hyprland::Rect;
 
     #[test]
     fn symbols_find_their_named_keys() {
@@ -400,5 +454,19 @@ mod tests {
         assert!(key_aliases("×").contains(&"multiply"));
         assert!(key_aliases("add").contains(&"+"), "and the other way round");
         assert!(key_aliases("sign in").is_empty(), "ordinary words have no aliases");
+    }
+
+    #[test]
+    fn detects_chrome_dual_scale_on_fractional_wayland() {
+        let win = Rect::new(12, 12, 1512, 840);
+        // Native Aura frame reports 1274x708 (~0.8426x of logical window).
+        let (fx, fy) = detect_frame_scale(1274, 708, win).expect("frame scale");
+        assert!((fx - 0.8426).abs() < 0.005);
+        assert!((fy - 0.8429).abs() < 0.005);
+        // Blink document web reports physical pixels (0, 129, 1892, 922) at 1.25x monitor scale.
+        let (dx, dy) = detect_document_scale(0, 129, 1892, 922, win, 1.25).expect("doc scale");
+        assert_eq!((dx, dy), (1.25, 1.25));
+        // Logical document web stays 1.0.
+        assert_eq!(detect_document_scale(0, 96, 1512, 744, win, 1.25), Some((1.0, 1.0)));
     }
 }

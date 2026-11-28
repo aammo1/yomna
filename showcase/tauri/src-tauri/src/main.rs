@@ -286,11 +286,11 @@ fn set_hot(window: WebviewWindow, hot: bool) {
 /// Linux: the parts of this overlay that take clicks, as [x, y, w, h, …] in CSS px (host.js). Everything else
 /// passes through to whatever is below.
 #[tauri::command]
-fn set_hit_rects(window: WebviewWindow, rects: Vec<f64>) {
+fn set_hit_rects(window: WebviewWindow, rects: Vec<f64>, keep_open: Option<bool>) {
     #[cfg(target_os = "linux")]
-    linux::set_hit_rects(&window, &rects);
+    linux::set_hit_rects(&window, &rects, keep_open.unwrap_or(false));
     #[cfg(not(target_os = "linux"))]
-    let _ = (window, rects);
+    let _ = (window, rects, keep_open);
 }
 
 /// macOS: hand the cursor-form sidekick to the voice helper to draw while it just follows the cursor (on: true, with
@@ -1110,7 +1110,10 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         // screen, as one of exactly its size is taken for a fullscreen app (GNOME then hides its top bar; Windows
         // draws a strip by an auto-hidden taskbar, #58).
         #[cfg(target_os = "linux")]
-        let init = format!("{init}window.YOMNA_LINUX={:?};", linux::session().name());
+        let init = {
+            let cs = if scale <= 1.01 { linux::hyprland_monitor_scale(mon.position().x, mon.position().y) } else { 1.0 };
+            format!("{init}window.YOMNA_LINUX={:?};window.YOMNA_COORD_SCALE={cs:.4};", linux::session().name())
+        };
         #[cfg(not(target_os = "macos"))]
         let size = tauri::LogicalSize::new(size.width, size.height - 1.0);
         let label = format!("overlay-{gen}-{i}");
@@ -1371,7 +1374,11 @@ fn safe_js(mon: &tauri::Monitor) -> String {
     // coordinates (like the window being captured).
     let (ox, oy) = (p.x as f64 / s, p.y as f64 / s);
     let notch = notch_js(ox, z.width as f64 / s, z.height as f64 / s);
-    format!("window.__jarvisSafe&&__jarvisSafe({{top:{top:.0},left:{left:.0},bottom:{bottom:.0},right:{right:.0},ox:{ox:.0},oy:{oy:.0},notch:{notch}}})")
+    #[cfg(target_os = "linux")]
+    let coord_scale = if s <= 1.01 { linux::hyprland_monitor_scale(p.x, p.y) } else { 1.0 };
+    #[cfg(not(target_os = "linux"))]
+    let coord_scale = 1.0;
+    format!("window.__jarvisSafe&&__jarvisSafe({{top:{top:.0},left:{left:.0},bottom:{bottom:.0},right:{right:.0},ox:{ox:.0},oy:{oy:.0},coordScale:{coord_scale:.4},notch:{notch}}})")
 }
 
 /// A screen as the overlays were laid out for it: where it is and its size (physical pixels), and its scale.

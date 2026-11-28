@@ -16,7 +16,9 @@
   R.unit = (env) => env.unit ?? Math.min(env.w, env.h);
   // Screen edges covered by the menu bar / Dock / taskbar, in CSS px. The desktop host keeps it current.
   R.safe = { top: 0, right: 0, bottom: 0, left: 0 };
+  R.coordScale = +window.YOMNA_COORD_SCALE > 0.5 ? +window.YOMNA_COORD_SCALE : 1;
   R.setSafe = (s) => { for (const k of ['top', 'right', 'bottom', 'left']) R.safe[k] = Math.max(0, +s?.[k] || 0); R.origin = { x: +s?.ox || 0, y: +s?.oy || 0 };
+    R.coordScale = +s?.coordScale > 0.5 ? +s.coordScale : 1;
     // The notch capsule keeps its own space at the top while it's open (notch.js): cards and drawings land below it.
     R.safeTop0 = R.safe.top; R.safe.top = Math.max(R.safe.top, R.notchReserve || 0);
     // The camera notch on this screen (macOS, main.rs safe_js), for the notch capsule (notch.js), or null.

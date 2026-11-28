@@ -175,6 +175,31 @@ if (process.platform === 'darwin') {
   // Regression (log of 2026-11-28 04:55-04:58): Gemini Live put steps in `actions` with `steps: []`.
   assert.deepEqual(fixAct({ app: 'Joplin', actions: ["{do: 'click_text', text: 'New note'}"], steps: [] }), { target: 'Joplin', steps: [{ do: 'click_text', text: 'New note' }] });
   assert.deepEqual(fixAct({ app: 'Joplin', actions: ["{do: 'type', text: 'Hello World'}"], steps: [] }).steps, [{ do: 'type', text: 'Hello World' }]);
+  // Regression (log of 2026-11-28 13:19-13:23): space-separated voice steps ("type hello", "click Submit", "press return").
+  assert.deepEqual(fixAct({ app: 'Google Contacts', do: ['type hello'], steps: [] }).steps, [{ do: 'type', text: 'hello' }]);
+  assert.deepEqual(fixAct({ app: 'browser', do: ['click Submit', 'click 32', 'press return'] }).steps, [{ do: 'click_text', text: 'Submit' }, { do: 'click', id: 32 }, { do: 'key', key: 'return' }]);
+  // Regression (log of 2026-11-28 13:58): comma-separated JSON objects inside a single steps[] string element.
+  assert.deepEqual(
+    fixAct({ app: 'zen', steps: ['{"do":"fill","field":"Search or enter address","text":"hello world"}, {"do":"key","key":"return"}'] }),
+    { target: 'zen', steps: [{ do: 'fill', field: 'Search or enter address', text: 'hello world' }, { do: 'key', key: 'return' }] },
+  );
+  // Regression (log of 2026-11-28 14:25): window management verb inside act_in_app steps, and .desktop Exec parsing.
+  assert.deepEqual(fixAct({ app: 'Files', steps: ['{"do":"fullscreen"}'] }), { target: 'Files', steps: [{ do: 'fullscreen' }] });
+  const { parseDesktopExec, typedAddress: typedAddr } = await import('../tools.mjs');
+  assert.deepEqual(parseDesktopExec('/usr/bin/google-chrome-stable %U'), ['/usr/bin/google-chrome-stable']);
+  assert.deepEqual(parseDesktopExec('/opt/zen-browser-bin/zen-bin --new-tab %u'), ['/opt/zen-browser-bin/zen-bin', '--new-tab']);
+  assert.equal(typedAddr('Zen', [{ do: 'fill', field: 'Search or enter address', text: 'github.com' }, { do: 'key', key: 'return' }]), 'github.com');
+  assert.equal(typedAddr('Zen', [{ do: 'fill', field: 'Search or enter address', text: 'hello world' }, { do: 'key', key: 'return' }]), null, 'plain search is not a URL');
+  // Floating popup deprioritized behind real browser window.
+  const zenWins = [
+    { address: '0xpop', class: 'zen', initialClass: 'zen', title: 'Tooltip', workspace: 1, focused: false, floating: true, area: 470 * 61, focusHistoryID: 4 },
+    { address: '0xmain', class: 'zen', initialClass: 'zen', title: 'Zen Browser', workspace: 3, focused: false, floating: false, area: 752 * 840, focusHistoryID: 1 },
+  ];
+  assert.equal(matchWindow(zenWins, 'Zen', more)?.address, '0xmain');
+  const listFilesTool = tools.find((t) => t.name === 'list_files');
+  assert.deepEqual(listFilesTool.normalize({ path: '~/Downloads' }), { path: '~/Downloads', dir: '~/Downloads' });
+  const runCmdTool = createTools({ allowActions: () => true, ui: () => {}, ask: async () => true, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'Test' }).tools.find((t) => t.name === 'run_command');
+  await assert.rejects(() => runCmdTool.execute({ command: 'cd ~/Downloads' }), /temporary subshell/);
   console.log('linux app tests: passed');
 }
 
