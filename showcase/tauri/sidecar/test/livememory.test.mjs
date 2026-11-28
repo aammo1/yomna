@@ -142,5 +142,6 @@ const setup = (tools = []) => {
   fs.mkdirSync(path.join(TMP, 'Plain'));
   assert.match(secondBrainBlock(path.join(TMP, 'Plain')), /look in the second brain first[^\n]*search_files/, 'no index: search it');
   assert.match(LIVE_GUIDANCE, /never say you don't know something about them before looking/i, 'the call says it too');
+  assert.match(LIVE_GUIDANCE, /call delegate_to_harness right away/i, 'the call hands real work to the harness instead of describing it');
 }
 console.log('livememory ok');

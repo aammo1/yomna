@@ -1090,8 +1090,10 @@ const liveCall = createLiveCall({
         const ac = new AbortController();
         liveDelegations.add(ac);
         const fullTask = context ? `${taskPrompt}\n\nContext:\n${context}` : taskPrompt;
+        const t0 = Date.now();
+        logLine('live_delegate', { harness: harnessManager.activeId, chars: fullTask.length, allow: !!config.allowActions, skip: !!config.allowActions && !!config.skipAllow });
         (async () => {
-          let text = '', errorMsg = '';
+          let text = '', errorMsg = '', tools = 0;
           try {
             await desktopMcpReady;
             for await (const ev of harnessManager.send({
@@ -1105,6 +1107,7 @@ const liveCall = createLiveCall({
               signal: ac.signal,
             })) {
               if (ev.type === 'text_delta') text += ev.text ?? '';
+              else if (ev.type === 'tool_start') tools++;
               else if (ev.type === 'done' && !text && ev.text) text = ev.text;
               else if (ev.type === 'error') errorMsg = ev.message || 'Harness task failed.';
             }
@@ -1113,6 +1116,7 @@ const liveCall = createLiveCall({
           } finally {
             liveDelegations.delete(ac);
           }
+          logLine(errorMsg ? 'live_delegate_failed' : 'live_delegate_done', { harness: harnessManager.activeId, ms: Date.now() - t0, tools, aborted: ac.signal.aborted, ...(errorMsg ? { error: errorMsg.slice(0, 300) } : {}) });
           if (ac.signal.aborted) return;
           const summary = errorMsg
             ? `Background harness (${activeHarnessLabel()}) error: ${errorMsg}`
